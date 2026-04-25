@@ -1,12 +1,12 @@
-# Copilot Instructions for azure-modal (aks_modal)
+# Copilot Instructions for Orchard
 
 ## Architecture
 
-This is a **sandbox orchestration service** running on Azure AKS, designed for multi-turn agent↔sandbox interactions (e.g., SWE-bench). Three main layers:
+This is a **sandbox orchestration service** running on Azure AKS, designed for multi-turn agent↔sandbox interactions (e.g., SWE-bench). Three main layers, each shipped differently:
 
-1. **Client SDK** (`client/sandbox_client.py`) — Sync (`SandboxClient`) and async (`AsyncSandboxClient`) Python clients. Both use context managers for lifecycle management. `SandboxInstance` / `AsyncSandboxInstance` handle exec, file ops, and patching. Public API is re-exported from `aks_modal/__init__.py`.
+1. **Client SDK** (`src/orchard/client.py`) — Sync (`SandboxClient`) and async (`AsyncSandboxClient`) Python clients. Both use context managers for lifecycle management. `SandboxInstance` / `AsyncSandboxInstance` handle exec, file ops, and patching. Public API is re-exported from `src/orchard/__init__.py`. **Shipped as a `pip install orchard` package** (only thing under `src/`).
 
-2. **Orchestrator** (`server/`) — FastAPI service managing sandbox lifecycle. Key components:
+2. **Orchestrator** (`server/`) — FastAPI service managing sandbox lifecycle. **Shipped as a container image** (`docker/orchestrator.Dockerfile`), not as a Python package — that is why it lives at the repo root and not under `src/`. Key components:
    - `api.py` — All routes defined directly (no APIRouter), request-ID middleware, API-key auth via `X-API-Key` header
    - `sandbox_manager.py` — Creates/deletes pods in a shared `sandbox-pods` namespace, manages network policies
    - `exec_manager.py` — Submits exec jobs, runs them under per-sandbox locks via the in-pod agent
@@ -14,7 +14,7 @@ This is a **sandbox orchestration service** running on Azure AKS, designed for m
    - `job_store.py` / `redis_job_store.py` — Job state storage (in-memory or Redis for multi-replica)
    - `pod_watcher.py` — K8s Watch/Informer for cached pod status
 
-3. **Sandbox Agent** (`agent/server.py`) — Lightweight FastAPI server injected into every sandbox pod. Handles `/exec`, `/files/upload`, `/files/download`, `/files/list`. Injected via init container (`docker/agent-injector.Dockerfile`) that bundles a self-contained Python interpreter so it works with ANY user image.
+3. **Sandbox Agent** (`agent/server.py`) — Lightweight FastAPI server injected into every sandbox pod. Handles `/exec`, `/files/upload`, `/files/download`, `/files/list`. Injected via init container (`docker/agent-injector.Dockerfile`) that bundles a self-contained Python interpreter so it works with ANY user image. Also shipped as a container image, not a Python package.
 
 ### Exec flow
 
@@ -39,18 +39,18 @@ black --check .
 # Format
 black .
 
-# Unit tests (no running orchestrator needed)
-python -m pytest tests/test_exec_timeout.py -v
-python -m pytest tests/test_resources.py -v
+# Unit tests (no running orchestrator needed) — also the default `pytest` target
+python -m pytest tests/unit -v
 
 # Run a single test
-python -m pytest tests/test_exec_timeout.py::TestJobResult::test_running_is_not_complete -v
+python -m pytest tests/unit/test_exec_timeout.py::TestJobResult::test_running_is_not_complete -v
 
-# Integration tests (require running orchestrator + SANDBOX_BASE_URL set)
-python tests/test_run.py
-python tests/test_async.py
-python tests/test_files.py
-python tests/test_file_ops.py
+# Integration scripts (require running orchestrator + SANDBOX_BASE_URL set).
+# These are runnable scripts, not pytest tests:
+python tests/integration/test_run.py
+python tests/integration/test_async.py
+python tests/integration/test_files.py
+python tests/integration/test_file_ops.py
 
 # Build container images (requires ACR access)
 ./deploy/scripts/build_push.sh

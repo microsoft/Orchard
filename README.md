@@ -33,6 +33,21 @@ on a dedicated node pool.
 └── tests/          # Unit (default) and integration tests
 ```
 
+### Layout rationale
+
+Three deployable artifacts live side by side, each with a different release form:
+
+- **`src/orchard/`** — the only `pip install`-able package. The `src/` layout
+  ensures local development always exercises the installed wheel rather than
+  the source tree, catching missing `package_data` or import bugs early.
+- **`server/`** — a service shipped as a container image (`docker/orchestrator.Dockerfile`).
+  It is *not* published to PyPI, so it intentionally stays at the repo root:
+  this keeps `COPY server/ ./server/` and `python -m server.main` symmetric,
+  avoids polluting `src/` with non-library code, and means
+  `pip install orchard` does not pull in `kubernetes` / `redis-py`.
+- **`agent/`** — also shipped as a container image and bundled into a
+  self-contained Python interpreter; same reasoning as `server/`.
+
 ## Quickstart
 
 ### Install the SDK
