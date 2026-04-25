@@ -1,6 +1,6 @@
 """Test file operations with sandbox."""
 import asyncio
-from aks_modal import AsyncSandboxClient
+from orchard import AsyncSandboxClient
 
 
 async def main():

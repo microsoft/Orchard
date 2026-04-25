@@ -26,7 +26,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from client.sandbox_client import SandboxClient, AsyncSandboxClient
+from orchard import AsyncSandboxClient, SandboxClient
 
 
 # =============================================================================

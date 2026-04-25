@@ -6,16 +6,16 @@ injected automatically via init container), bypassing the K8s API server for low
 high-concurrency exec. Works with ANY container image.
 
 Example usage (sync):
-    from client.sandbox_client import SandboxClient
-    
+    from orchard import SandboxClient
+
     with SandboxClient("http://localhost:8000") as client:
         with client.create_sandbox("ubuntu:22.04") as sandbox:
             result = sandbox.exec("echo 'hello'")
             print(result)
 
 Example usage (async):
-    from client.sandbox_client import AsyncSandboxClient
-    
+    from orchard import AsyncSandboxClient
+
     async with AsyncSandboxClient("http://localhost:8000") as client:
         async with await client.create_sandbox("ubuntu:22.04") as sandbox:
             result = await sandbox.exec("echo 'hello'")

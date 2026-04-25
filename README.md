@@ -47,7 +47,7 @@ client = SandboxClient(
 ### Synchronous Client
 
 ```python
-from aks_modal import SandboxClient
+from orchard import SandboxClient
 
 # Using context manager (recommended - auto cleanup)
 with SandboxClient() as client:
@@ -77,7 +77,7 @@ with SandboxClient() as client:
 ### Asynchronous Client
 
 ```python
-from aks_modal import AsyncSandboxClient
+from orchard import AsyncSandboxClient
 
 async def main():
     async with AsyncSandboxClient() as client:
@@ -185,7 +185,7 @@ client = SandboxClient(auto_cleanup=False)
 ## Error Handling
 
 ```python
-from aks_modal import SandboxClient
+from orchard import SandboxClient
 
 try:
     with SandboxClient() as client:
@@ -637,7 +637,7 @@ pip install requests aiohttp
 **基本使用（同步客户端）：**
 
 ```python
-from client.sandbox_client import SandboxClient
+from orchard import SandboxClient
 import os
 
 # 方法 1: 通过环境变量设置 API Key
@@ -751,7 +751,7 @@ for f in files:
 
 ```python
 import asyncio
-from client.sandbox_client import AsyncSandboxClient
+from orchard import AsyncSandboxClient
 
 async def main():
     async with AsyncSandboxClient("http://localhost:8000", api_key="your-key") as client:
@@ -1247,7 +1247,7 @@ ruff check orchestrator/ client/
 
 1. 修改 `orchestrator/api.py` 添加新端点
 2. 在对应的 manager 中实现逻辑
-3. 更新 `client/sandbox_client.py`
+3. 更新 `src/orchard/client.py`
 4. 更新文档
 5. 添加测试
 

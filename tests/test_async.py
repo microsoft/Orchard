@@ -1,5 +1,5 @@
 import asyncio
-from aks_modal import AsyncSandboxClient
+from orchard import AsyncSandboxClient
 import random
 
 async def main():

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from client.sandbox_client import JobResult, SandboxInstance
+from orchard.client import JobResult, SandboxInstance
 
 
 class TestJobResult:
@@ -122,7 +122,7 @@ class TestSyncExecStatusHandling:
             }
 
         sandbox = self._make_sandbox(fake_request)
-        with patch("client.sandbox_client.time") as mock_time:
+        with patch("orchard.client.time") as mock_time:
             mock_time.monotonic = time.monotonic
             mock_time.time = time.time
             mock_time.sleep = MagicMock()  # Don't actually sleep
@@ -157,7 +157,7 @@ class TestSyncExecStatusHandling:
         # Use a very short timeout and simulate time advancing past the deadline
         monotonic_values = iter([0.0, 0.0, 1000.0])  # 3rd call exceeds deadline
 
-        with patch("client.sandbox_client.time") as mock_time:
+        with patch("orchard.client.time") as mock_time:
             mock_time.monotonic = lambda: next(monotonic_values)
             mock_time.time = time.time
             mock_time.sleep = MagicMock()
