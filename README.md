@@ -119,7 +119,8 @@ Full walkthrough: [docs/deployment.md](docs/deployment.md).
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]"             # SDK + dev tools
+pip install -e ".[dev,server]"      # also include server runtime deps
 
 # Lint and format
 ruff check .
