@@ -8,7 +8,7 @@ import uuid
 from contextvars import ContextVar
 from typing import Any, Dict
 
-from orchestrator.settings import settings
+from server.settings import settings
 
 # Context variable for request ID
 request_id_var: ContextVar[str] = ContextVar("request_id", default="")

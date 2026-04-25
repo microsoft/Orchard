@@ -6,7 +6,7 @@ This is a **sandbox orchestration service** running on Azure AKS, designed for m
 
 1. **Client SDK** (`client/sandbox_client.py`) — Sync (`SandboxClient`) and async (`AsyncSandboxClient`) Python clients. Both use context managers for lifecycle management. `SandboxInstance` / `AsyncSandboxInstance` handle exec, file ops, and patching. Public API is re-exported from `aks_modal/__init__.py`.
 
-2. **Orchestrator** (`orchestrator/`) — FastAPI service managing sandbox lifecycle. Key components:
+2. **Orchestrator** (`server/`) — FastAPI service managing sandbox lifecycle. Key components:
    - `api.py` — All routes defined directly (no APIRouter), request-ID middleware, API-key auth via `X-API-Key` header
    - `sandbox_manager.py` — Creates/deletes pods in a shared `sandbox-pods` namespace, manages network policies
    - `exec_manager.py` — Submits exec jobs, runs them under per-sandbox locks via the in-pod agent
@@ -22,7 +22,7 @@ Client calls `POST /sandboxes/{id}/exec` with `wait=True` → orchestrator runs 
 
 ### Container images
 
-- `Dockerfile` — Orchestrator (`python -m orchestrator.main`)
+- `Dockerfile` — Orchestrator (`python -m server.main`)
 - `Dockerfile.sandbox` — Sandbox with baked-in agent (for known images)
 - `Dockerfile.agent-injector` — Init container that copies agent + bundled Python into any user image via emptyDir volume
 
@@ -60,7 +60,7 @@ python tests/test_file_ops.py
 
 ### Configuration
 
-- **Orchestrator**: `pydantic-settings` (`orchestrator/settings.py`), configured via env vars or `.env` file. Singleton `settings` object imported throughout.
+- **Orchestrator**: `pydantic-settings` (`server/settings.py`), configured via env vars or `.env` file. Singleton `settings` object imported throughout.
 - **Client SDK**: Constructor params take priority over env vars (`SANDBOX_BASE_URL`, `SANDBOX_API_KEY`, `SANDBOX_PREFIX`).
 
 ### Error handling
@@ -71,7 +71,7 @@ python tests/test_file_ops.py
 
 ### Logging
 
-- Orchestrator uses structured JSON logging by default (`orchestrator/utils.py`). Request IDs are propagated via `ContextVar`.
+- Orchestrator uses structured JSON logging by default (`server/utils.py`). Request IDs are propagated via `ContextVar`.
 - Agent uses plain text logging (`%(asctime)s [%(levelname)s]` format).
 
 ### Python

@@ -6,8 +6,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Optional
 
-from orchestrator.k8s_client import K8sClient
-from orchestrator.settings import settings
+from server.k8s_client import K8sClient
+from server.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ class SandboxManager:
             return None
         
         if self._redis_store is None:
-            from orchestrator.redis_store import get_redis_store
+            from server.redis_store import get_redis_store
             self._redis_store = await get_redis_store()
         
         return self._redis_store

@@ -10,13 +10,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -e .
 
 # Copy application code
-COPY orchestrator/ ./orchestrator/
+COPY server/ ./server/
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && \
@@ -32,4 +33,4 @@ EXPOSE 8000
 #     CMD python -c "import requests; requests.get('http://localhost:8000/health')" || exit 1
 
 # Run the application
-CMD ["python", "-m", "orchestrator.main"]
+CMD ["python", "-m", "server.main"]

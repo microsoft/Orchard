@@ -50,19 +50,19 @@ class TestParseCpu:
     """K8sClient._parse_cpu static-method tests."""
 
     def test_integer(self):
-        from orchestrator.k8s_client import K8sClient
+        from server.k8s_client import K8sClient
         assert K8sClient._parse_cpu("4") == 4.0
 
     def test_float(self):
-        from orchestrator.k8s_client import K8sClient
+        from server.k8s_client import K8sClient
         assert K8sClient._parse_cpu("0.5") == 0.5
 
     def test_millicpu(self):
-        from orchestrator.k8s_client import K8sClient
+        from server.k8s_client import K8sClient
         assert K8sClient._parse_cpu("500m") == 0.5
 
     def test_millicpu_small(self):
-        from orchestrator.k8s_client import K8sClient
+        from server.k8s_client import K8sClient
         assert K8sClient._parse_cpu("100m") == pytest.approx(0.1)
 
 
@@ -70,19 +70,19 @@ class TestParseMemory:
     """K8sClient._parse_memory static-method tests."""
 
     def test_gi(self):
-        from orchestrator.k8s_client import K8sClient
+        from server.k8s_client import K8sClient
         assert K8sClient._parse_memory("16Gi") == 16 * 1024 ** 3
 
     def test_mi(self):
-        from orchestrator.k8s_client import K8sClient
+        from server.k8s_client import K8sClient
         assert K8sClient._parse_memory("512Mi") == 512 * 1024 ** 2
 
     def test_ki(self):
-        from orchestrator.k8s_client import K8sClient
+        from server.k8s_client import K8sClient
         assert K8sClient._parse_memory("1024Ki") == 1024 * 1024
 
     def test_plain_bytes(self):
-        from orchestrator.k8s_client import K8sClient
+        from server.k8s_client import K8sClient
         assert K8sClient._parse_memory("1048576") == 1048576
 
 
@@ -116,9 +116,9 @@ class TestGetClusterResources:
         ]
 
         with (
-            patch("orchestrator.k8s_client.config"),
-            patch("orchestrator.k8s_client.client"),
-            patch("orchestrator.k8s_client.settings") as mock_settings,
+            patch("server.k8s_client.config"),
+            patch("server.k8s_client.client"),
+            patch("server.k8s_client.settings") as mock_settings,
         ):
             mock_settings.in_cluster = False
             mock_settings.k8s_api_pool_size = 10
@@ -130,7 +130,7 @@ class TestGetClusterResources:
             mock_settings.k8s_api_timeout = 10
             mock_settings.k8s_api_retries = 1
 
-            from orchestrator.k8s_client import K8sClient
+            from server.k8s_client import K8sClient
 
             k8s = K8sClient()
 
@@ -161,9 +161,9 @@ class TestGetClusterResources:
     async def test_empty_cluster(self):
         """No nodes and no pods should return zeroes."""
         with (
-            patch("orchestrator.k8s_client.config"),
-            patch("orchestrator.k8s_client.client"),
-            patch("orchestrator.k8s_client.settings") as mock_settings,
+            patch("server.k8s_client.config"),
+            patch("server.k8s_client.client"),
+            patch("server.k8s_client.settings") as mock_settings,
         ):
             mock_settings.in_cluster = False
             mock_settings.k8s_api_pool_size = 10
@@ -175,7 +175,7 @@ class TestGetClusterResources:
             mock_settings.k8s_api_timeout = 10
             mock_settings.k8s_api_retries = 1
 
-            from orchestrator.k8s_client import K8sClient
+            from server.k8s_client import K8sClient
 
             k8s = K8sClient()
 
@@ -212,10 +212,10 @@ class TestResourcesEndpoint:
         }
 
         with (
-            patch("orchestrator.api.settings") as mock_settings,
-            patch("orchestrator.k8s_client.config"),
-            patch("orchestrator.k8s_client.client"),
-            patch("orchestrator.k8s_client.settings") as mock_k8s_settings,
+            patch("server.api.settings") as mock_settings,
+            patch("server.k8s_client.config"),
+            patch("server.k8s_client.client"),
+            patch("server.k8s_client.settings") as mock_k8s_settings,
         ):
             mock_settings.require_api_key = False
             mock_settings.service_name = "test"
@@ -229,7 +229,7 @@ class TestResourcesEndpoint:
             mock_k8s_settings.sandbox_namespace = "sandbox-pods"
 
             # We import the app and override the k8s_client at module level
-            import orchestrator.api as api_module
+            import server.api as api_module
 
             mock_k8s = MagicMock()
             mock_k8s.get_cluster_resources = AsyncMock(return_value=fake_data)

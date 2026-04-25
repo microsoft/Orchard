@@ -253,7 +253,7 @@ Default: 3 retries with exponential backoff (1s, 2s, 4s).
 
 ```
 .
-├── orchestrator/          # FastAPI 服务核心代码
+├── server/                # FastAPI 服务核心代码
 │   ├── main.py           # 入口点
 │   ├── api.py            # API 路由定义
 │   ├── settings.py       # 配置管理
@@ -1233,19 +1233,19 @@ pip install -e ".[dev]"
 
 # 运行 orchestrator（需要 kubeconfig）
 export IN_CLUSTER=false
-python -m orchestrator.main
+python -m server.main
 
 # 运行测试（TODO）
 pytest tests/
 
 # 代码格式化
-black orchestrator/ client/
-ruff check orchestrator/ client/
+black server/ src/
+ruff check server/ src/
 ```
 
 ### 添加新功能
 
-1. 修改 `orchestrator/api.py` 添加新端点
+1. 修改 `server/api.py` 添加新端点
 2. 在对应的 manager 中实现逻辑
 3. 更新 `src/orchard/client.py`
 4. 更新文档

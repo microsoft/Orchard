@@ -2,8 +2,8 @@
 
 import uvicorn
 
-from orchestrator.api import app
-from orchestrator.settings import settings
+from server.api import app
+from server.settings import settings
 
 
 def main():

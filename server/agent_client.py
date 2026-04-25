@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 
-from orchestrator.settings import settings
+from server.settings import settings
 
 logger = logging.getLogger(__name__)
 

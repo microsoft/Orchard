@@ -8,8 +8,8 @@ from typing import Dict, List, Optional
 
 import redis.asyncio as redis
 
-from orchestrator.job_store import Job, JobStatus
-from orchestrator.settings import settings
+from server.job_store import Job, JobStatus
+from server.settings import settings
 
 logger = logging.getLogger(__name__)
 

@@ -8,12 +8,12 @@ import asyncio
 import logging
 from typing import Dict, List, Optional, Union
 
-from orchestrator.agent_client import AgentClient
-from orchestrator.job_store import JobStatus, JobStore
-from orchestrator.k8s_client import K8sClient
-from orchestrator.sandbox_manager import SandboxManager
-from orchestrator.settings import settings
-from orchestrator.utils import generate_job_id
+from server.agent_client import AgentClient
+from server.job_store import JobStatus, JobStore
+from server.k8s_client import K8sClient
+from server.sandbox_manager import SandboxManager
+from server.settings import settings
+from server.utils import generate_job_id
 
 logger = logging.getLogger(__name__)
 

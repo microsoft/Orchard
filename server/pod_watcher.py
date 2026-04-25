@@ -19,7 +19,7 @@ from typing import Callable, Coroutine, Dict, Optional, Set
 from kubernetes import client, config, watch
 from kubernetes.client import ApiException
 
-from orchestrator.settings import settings
+from server.settings import settings
 
 logger = logging.getLogger(__name__)
 

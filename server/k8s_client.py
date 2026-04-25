@@ -12,7 +12,7 @@ from kubernetes import client, config
 from kubernetes.client import ApiException
 from kubernetes.stream import stream
 
-from orchestrator.settings import settings
+from server.settings import settings
 
 logger = logging.getLogger(__name__)
 

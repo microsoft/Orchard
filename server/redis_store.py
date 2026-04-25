@@ -9,7 +9,7 @@ from typing import Dict, Optional, Set
 
 import redis.asyncio as redis
 
-from orchestrator.settings import settings
+from server.settings import settings
 
 logger = logging.getLogger(__name__)
 

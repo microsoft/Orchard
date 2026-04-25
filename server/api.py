@@ -10,15 +10,15 @@ from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from orchestrator.agent_client import AgentClient
-from orchestrator.exec_manager import ExecManager
-from orchestrator.job_store import JobStore
-from orchestrator.redis_job_store import RedisJobStore
-from orchestrator.k8s_client import K8sClient
-from orchestrator.pod_watcher import PodWatcher
-from orchestrator.sandbox_manager import SandboxManager
-from orchestrator.settings import settings
-from orchestrator.utils import (
+from server.agent_client import AgentClient
+from server.exec_manager import ExecManager
+from server.job_store import JobStore
+from server.redis_job_store import RedisJobStore
+from server.k8s_client import K8sClient
+from server.pod_watcher import PodWatcher
+from server.sandbox_manager import SandboxManager
+from server.settings import settings
+from server.utils import (
     generate_request_id,
     generate_sandbox_id,
     request_id_var,
