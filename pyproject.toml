@@ -33,6 +33,12 @@ dev = [
 where = ["src"]
 include = ["orchard*"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+markers = [
+    "integration: marks tests that require a running orchestrator",
+]
+
 [tool.black]
 line-length = 88
 target-version = ['py311']
