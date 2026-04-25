@@ -20,7 +20,7 @@ End-to-end guide for deploying Orchard on Azure AKS.
 
 ```bash
 # 克隆或进入项目目录
-cd azure-modal
+cd Orchard
 
 # 使脚本可执行
 chmod +x deploy/scripts/*.sh deploy/azure/*.sh

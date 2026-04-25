@@ -306,21 +306,21 @@
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| `SandboxClient` | `client/sandbox_client.py` | Synchronous HTTP client with auto-retry and exit cleanup |
-| `AsyncSandboxClient` | `client/sandbox_client.py` | Asynchronous HTTP client for concurrent operations |
-| `SandboxInstance` | `client/sandbox_client.py` | Single sandbox instance, encapsulates command execution and file operations |
-| `JobResult` | `client/sandbox_client.py` | Data class for job execution results |
+| `SandboxClient` | `src/orchard/client.py` | Synchronous HTTP client with auto-retry and exit cleanup |
+| `AsyncSandboxClient` | `src/orchard/client.py` | Asynchronous HTTP client for concurrent operations |
+| `SandboxInstance` | `src/orchard/client.py` | Single sandbox instance, encapsulates command execution and file operations |
+| `JobResult` | `src/orchard/client.py` | Data class for job execution results |
 
 ### Orchestrator Layer
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| `FastAPI App` | `orchestrator/api.py` | REST API entry point, route definitions, request handling |
-| `SandboxManager` | `orchestrator/sandbox_manager.py` | Sandbox lifecycle management, state storage |
-| `ExecManager` | `orchestrator/exec_manager.py` | Command execution scheduling, concurrency control |
-| `JobStore` | `orchestrator/job_store.py` | Job status storage and tracking |
-| `K8sClient` | `orchestrator/k8s_client.py` | Kubernetes API wrapper |
-| `RedisStore` | `orchestrator/redis_store.py` | Redis backend storage (multi-replica support) |
+| `FastAPI App` | `server/api.py` | REST API entry point, route definitions, request handling |
+| `SandboxManager` | `server/sandbox_manager.py` | Sandbox lifecycle management, state storage |
+| `ExecManager` | `server/exec_manager.py` | Command execution scheduling, concurrency control |
+| `JobStore` | `server/job_store.py` | Job status storage and tracking |
+| `K8sClient` | `server/k8s_client.py` | Kubernetes API wrapper |
+| `RedisStore` | `server/redis_job_store.py` | Redis backend storage (multi-replica support) |
 
 ### Infrastructure Layer
 
@@ -435,7 +435,7 @@
 
 ### Synchronous Client
 ```python
-from client.sandbox_client import SandboxClient
+from orchard import SandboxClient
 
 with SandboxClient("http://orchestrator:8000") as client:
     with client.create_sandbox("python:3.11-slim") as sandbox:
@@ -445,7 +445,7 @@ with SandboxClient("http://orchestrator:8000") as client:
 
 ### Asynchronous Client
 ```python
-from client.sandbox_client import AsyncSandboxClient
+from orchard import AsyncSandboxClient
 import asyncio
 
 async def main():
@@ -459,7 +459,7 @@ asyncio.run(main())
 
 ### File Operations
 ```python
-from client.sandbox_client import SandboxClient
+from orchard import SandboxClient
 
 with SandboxClient("http://orchestrator:8000") as client:
     with client.create_sandbox("python:3.11-slim") as sandbox:
@@ -481,7 +481,7 @@ with SandboxClient("http://orchestrator:8000") as client:
 
 ### Concurrent Sandboxes (Async)
 ```python
-from client.sandbox_client import AsyncSandboxClient
+from orchard import AsyncSandboxClient
 import asyncio
 
 async def run_in_sandbox(client, task_id):

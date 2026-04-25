@@ -8,7 +8,7 @@ Install from source:
 
 ```bash
 git clone repo
-cd azure-modal
+cd Orchard
 pip install -e .
 ```
 
@@ -47,7 +47,7 @@ client = SandboxClient(
 ### Synchronous Client
 
 ```python
-from aks_modal import SandboxClient
+from orchard import SandboxClient
 
 # Using context manager (recommended - auto cleanup)
 with SandboxClient() as client:
@@ -77,7 +77,7 @@ with SandboxClient() as client:
 ### Asynchronous Client
 
 ```python
-from aks_modal import AsyncSandboxClient
+from orchard import AsyncSandboxClient
 
 async def main():
     async with AsyncSandboxClient() as client:
@@ -185,7 +185,7 @@ client = SandboxClient(auto_cleanup=False)
 ## Error Handling
 
 ```python
-from aks_modal import SandboxClient
+from orchard import SandboxClient
 
 try:
     with SandboxClient() as client:
