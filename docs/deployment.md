@@ -4,32 +4,32 @@ End-to-end guide for deploying Orchard on Azure AKS.
 
 ---
 
-## 快速开始
+## Quick start
 
-### 前置要求
+### Prerequisites
 
-- Azure 账号和有效订阅
-- Azure CLI (`az`) 已安装并登录
-- Docker 已安装
-- kubectl 已安装
-- Python 3.11+ （用于客户端）
+- An Azure account with an active subscription
+- Azure CLI (`az`) installed and signed in
+- Docker installed
+- kubectl installed
+- Python 3.11+ (for the client)
 
-### 步骤 1: 部署 Azure 资源
+### Step 1: Provision Azure resources
 
-创建 AKS 集群、ACR、Log Analytics 等资源：
+Create the AKS cluster, ACR, Log Analytics workspace, and supporting resources:
 
 ```bash
-# 克隆或进入项目目录
+# Clone or change into the project directory
 cd Orchard
 
-# 使脚本可执行
+# Make the scripts executable
 chmod +x deploy/scripts/*.sh deploy/azure/*.sh
 
-# 部署 AKS（约 10-15 分钟）
+# Deploy AKS (takes ~10–15 minutes)
 ./deploy/scripts/deploy_aks.sh
 ```
 
-**可选配置（通过环境变量）：**
+**Optional configuration (via environment variables):**
 
 ```bash
 export RESOURCE_GROUP="my-sandbox-rg"
@@ -39,112 +39,117 @@ export ACR_NAME="mysandboxacr$(date +%s)"
 ./deploy/scripts/deploy_aks.sh
 ```
 
-脚本会创建：
-- **资源组**: 包含所有资源
-- **AKS 集群**: 启用 Calico NetworkPolicy
-  - **sys node pool**: 3-6 nodes (Standard_D4s_v5), 用于系统组件和 orchestrator
-  - **sbx node pool**: 0-50 nodes (Standard_D8s_v5), 标签 `workload=sandbox`, 用于 sandbox pods
-- **ACR**: 用于存储 orchestrator 镜像
-- **Log Analytics**: 用于监控和日志
+The script provisions:
 
-完成后会输出配置信息并保存到 `.azure-config` 文件。
+- **Resource group** containing all resources
+- **AKS cluster** with Calico NetworkPolicy enabled
+  - **`sys` node pool**: 3–6 nodes (Standard_D4s_v5) for system components and the orchestrator
+  - **`sbx` node pool**: 0–50 nodes (Standard_D8s_v5), labeled `workload=sandbox`, for sandbox pods
+- **ACR** for the orchestrator image
+- **Log Analytics** workspace for monitoring and logs
 
-### 步骤 2: 获取 AKS 凭证
+When it finishes, configuration is printed and saved to `.azure-config`.
+
+### Step 2: Get AKS credentials
 
 ```bash
-# 如果脚本已执行，凭证已自动配置
-# 否则手动获取：
+# If the script ran successfully, credentials are already configured.
+# Otherwise, fetch them manually:
 source .azure-config
 az aks get-credentials \
   --resource-group $RESOURCE_GROUP \
   --name $CLUSTER_NAME \
   --overwrite-existing
 
-# 验证连接
+# Verify connectivity
 kubectl get nodes
 ```
 
-你应该看到两个 node pool：
-- `sys-*` 节点（system pool）
-- `sbx-*` 节点（sandbox pool，可能为 0 因为 autoscaler）
+You should see two node pools:
 
-### 步骤 3: 构建并推送 Orchestrator 镜像
+- `sys-*` nodes (system pool)
+- `sbx-*` nodes (sandbox pool — possibly 0 if the autoscaler has scaled down)
+
+### Step 3: Build and push the orchestrator image
 
 ```bash
-# 构建镜像并推送到 ACR
+# Build the image and push it to ACR
 ./deploy/scripts/build_push.sh
 
-# 如果 .azure-config 不存在，手动指定 ACR：
+# If .azure-config does not exist, specify the ACR explicitly:
 export ACR_NAME=your-acr-name
 ./deploy/scripts/build_push.sh
 ```
 
-这会：
-1. 登录到 ACR
-2. 构建 Docker 镜像
-3. 推送到 ACR
-4. 验证镜像上传成功
+This script:
 
-### 步骤 4: 部署 Orchestrator 到 Kubernetes
+1. Logs in to ACR
+2. Builds the Docker image
+3. Pushes it to ACR
+4. Verifies the upload succeeded
+
+### Step 4: Deploy the orchestrator to Kubernetes
 
 ```bash
-# 部署所有 K8s 资源
+# Apply all K8s resources
 ./deploy/scripts/deploy_k8s.sh
 ```
 
-这会创建：
-- `orchestrator` namespace
-- ServiceAccount 和 RBAC 规则（最小权限）
-- ConfigMap（环境变量配置）
-- Deployment（2 replicas）
-- Service（ClusterIP）
-- HPA 和 PDB（可选）
+This creates:
 
-等待 pods 就绪：
+- The `orchestrator` namespace
+- ServiceAccount and RBAC rules (least privilege)
+- ConfigMap (environment configuration)
+- Deployment (2 replicas)
+- Service (ClusterIP)
+- HPA and PDB (optional)
+
+Wait for the pods to become ready:
 
 ```bash
 kubectl get pods -n orchestrator -w
 ```
 
-查看日志：
+Tail the logs:
 
 ```bash
 kubectl logs -n orchestrator -l app=sandbox-orchestrator -f
 ```
 
-### 步骤 5: 访问服务
+### Step 5: Access the service
 
-**方法 1: Port Forward（推荐用于测试）**
+**Option 1: Port forward (recommended for testing)**
 
 ```bash
 kubectl port-forward -n orchestrator svc/sandbox-orchestrator 8000:80
 ```
 
-然后访问 `http://localhost:8000`
+Then point your client at `http://localhost:8000`.
 
-**方法 2: Ingress（生产环境）**
+**Option 2: Ingress (production)**
 
-编辑 `deploy/k8s/optional.yaml` 中的 Ingress 配置，设置你的域名和 TLS 证书，然后：
+Edit the Ingress configuration in `deploy/k8s/optional.yaml` to set your domain and TLS certificate, then:
 
 ```bash
 kubectl apply -f deploy/k8s/optional.yaml
 ```
 
-### 步骤 6: 运行冒烟测试
+### Step 6: Run the smoke test
 
 ```bash
-# 确保 port-forward 在运行
+# Make sure port-forward is still running
 ./deploy/scripts/smoke_test.sh
 ```
 
-测试会：
-1. 创建一个 sandbox
-2. 执行 echo 命令
-3. 查询 job 状态
-4. 应用 git patch（可选）
-5. 删除 sandbox
+The smoke test will:
 
-如果一切正常，你会看到：
+1. Create a sandbox
+2. Run an `echo` command
+3. Query the job status
+4. Apply a git patch (optional)
+5. Delete the sandbox
+
+On success you should see:
 
 ```
 ============================================
@@ -155,124 +160,125 @@ All basic operations completed successfully
 
 ---
 
-## 配置
+## Configuration
 
-### 环境变量（在 deploy/k8s/configmap.yaml 和 deploy/k8s/secret.yaml 中配置）
+### Environment variables (set in `deploy/k8s/configmap.yaml` and `deploy/k8s/secret.yaml`)
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `SERVICE_NAME` | `sandbox-orchestrator` | 服务名称 |
-| `HOST` | `0.0.0.0` | 监听地址 |
-| `PORT` | `8000` | 监听端口 |
-| `IN_CLUSTER` | `true` | 是否在集群内运行 |
-| `NAMESPACE_PREFIX` | `sbx-` | Sandbox namespace 前缀 |
-| `DEFAULT_CPU` | `4` | 默认 Pod CPU 资源 |
-| `DEFAULT_MEMORY` | `16Gi` | 默认 Pod 内存资源 |
-| `DEFAULT_WORKING_DIR` | `/workspace` | 工作目录 |
-| `DEFAULT_BLOCK_NETWORK` | `true` | 默认阻止网络出站 |
-| `MAX_CONCURRENT_EXECS` | `20` | 全局最大并发执行数 |
-| `DEFAULT_TIMEOUT_SECONDS` | `300` | 默认命令超时 |
-| `SANDBOX_TTL_HOURS` | `2` | Sandbox 自动清理时间 |
-| `ORPHAN_JOB_TTL_HOURS` | `1` | 孤立 Job 清理时间 |
-| `CLEANUP_INTERVAL_SECONDS` | `300` | 清理任务间隔 |
-| `LOG_LEVEL` | `INFO` | 日志级别 |
-| `LOG_FORMAT` | `json` | 日志格式 |
-| `USE_REDIS` | `true` | 是否使用 Redis（多副本需要） |
-| `REDIS_URL` | `redis://redis-service...` | Redis 连接 URL |
-| `REQUIRE_API_KEY` | `true` | 是否要求 API Key 认证 |
-| `API_KEYS` | (secret) | 逗号分隔的有效 API Keys |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERVICE_NAME` | `sandbox-orchestrator` | Service name |
+| `HOST` | `0.0.0.0` | Listen address |
+| `PORT` | `8000` | Listen port |
+| `IN_CLUSTER` | `true` | Whether the orchestrator is running inside the cluster |
+| `NAMESPACE_PREFIX` | `sbx-` | Prefix for sandbox namespaces |
+| `DEFAULT_CPU` | `4` | Default sandbox pod CPU |
+| `DEFAULT_MEMORY` | `16Gi` | Default sandbox pod memory |
+| `DEFAULT_WORKING_DIR` | `/workspace` | Default working directory |
+| `DEFAULT_BLOCK_NETWORK` | `true` | Block egress traffic by default |
+| `MAX_CONCURRENT_EXECS` | `20` | Global maximum concurrent executions |
+| `DEFAULT_TIMEOUT_SECONDS` | `300` | Default command timeout |
+| `SANDBOX_TTL_HOURS` | `2` | Auto-cleanup TTL for sandboxes |
+| `ORPHAN_JOB_TTL_HOURS` | `1` | Cleanup TTL for orphaned jobs |
+| `CLEANUP_INTERVAL_SECONDS` | `300` | Cleanup task interval |
+| `LOG_LEVEL` | `INFO` | Log level |
+| `LOG_FORMAT` | `json` | Log format |
+| `USE_REDIS` | `true` | Use Redis (required for multi-replica) |
+| `REDIS_URL` | `redis://redis-service...` | Redis connection URL |
+| `REQUIRE_API_KEY` | `true` | Require `X-API-Key` authentication |
+| `API_KEYS` | (secret) | Comma-separated list of valid API keys |
 
-修改配置后重新部署：
+Reapply after editing:
 
 ```bash
 kubectl apply -f deploy/k8s/configmap.yaml
 kubectl rollout restart deployment/sandbox-orchestrator -n orchestrator
 ```
 
-### Sandbox 资源限制
+### Sandbox resource limits
 
-每个 sandbox pod 的默认资源配置：
+Default per-sandbox-pod configuration:
 
 - **CPU**: 4 cores (requests = limits)
 - **Memory**: 16Gi (requests = limits)
-- **Node Selector**: `workload: sandbox`
-- **工作目录**: `/workspace`
-- **超时**: 3600秒 (1小时)
+- **Node selector**: `workload: sandbox`
+- **Working directory**: `/workspace`
+- **Timeout**: 3600 seconds (1 hour)
 
-**设置全局默认值**：
-1. 编辑 `deploy/k8s/configmap.yaml` 中的 `DEFAULT_CPU` 和 `DEFAULT_MEMORY`
-2. 重新部署 ConfigMap
-3. 重启 orchestrator deployment
+**Change the global defaults:**
 
-**按 sandbox 自定义**：
+1. Edit `DEFAULT_CPU` and `DEFAULT_MEMORY` in `deploy/k8s/configmap.yaml`
+2. Reapply the ConfigMap
+3. Restart the orchestrator Deployment
+
+**Override per sandbox:**
+
 ```python
-# 在创建时指定资源
+# Specify resources at creation time
 sandbox = client.create_sandbox(
     "python:3.11-slim",
     cpu="8",         # 8 cores
     memory="32Gi",   # 32 GB RAM
-    timeout=7200     # 2 hour timeout
+    timeout=7200,    # 2 hour timeout
 )
 ```
 
-
 ---
 
-## 运维指南
+## Operations
 
-### 监控
+### Monitoring
 
-**查看 orchestrator 日志：**
+**Tail orchestrator logs:**
 
 ```bash
 kubectl logs -n orchestrator -l app=sandbox-orchestrator -f --tail=100
 ```
 
-**查看所有 sandbox namespaces：**
+**List all sandbox namespaces:**
 
 ```bash
 kubectl get namespaces | grep sbx-
 ```
 
-**查看某个 sandbox 的 pod：**
+**Inspect a specific sandbox pod:**
 
 ```bash
 kubectl get pods -n sbx-{sandbox_id}
 ```
 
-**查看 NetworkPolicy：**
+**Inspect NetworkPolicies:**
 
 ```bash
 kubectl get networkpolicies -n sbx-{sandbox_id}
 ```
 
-**查看 orchestrator metrics：**
+**Orchestrator metrics:**
 
 ```bash
 kubectl top pods -n orchestrator
 ```
 
-**查看 node pool 状态：**
+**Sandbox node pool status:**
 
 ```bash
 kubectl get nodes -l workload=sandbox
 ```
 
-### 扩缩容
+### Scaling
 
-**手动扩缩 orchestrator：**
+**Manually scale the orchestrator:**
 
 ```bash
 kubectl scale deployment/sandbox-orchestrator -n orchestrator --replicas=5
 ```
 
-**HPA 会自动扩缩容**（如果已部署 optional.yaml）：
+**HPA-driven autoscaling** (when `optional.yaml` is applied):
 
 ```bash
 kubectl get hpa -n orchestrator
 ```
 
-**调整 sandbox node pool：**
+**Resize the sandbox node pool:**
 
 ```bash
 az aks nodepool scale \
@@ -282,112 +288,122 @@ az aks nodepool scale \
   --node-count 10
 ```
 
-### 故障排查
+### Troubleshooting
 
-**Pod 无法启动：**
+**Pod fails to start:**
 
 ```bash
 kubectl describe pod -n orchestrator -l app=sandbox-orchestrator
 ```
 
-**Sandbox pod 无法调度：**
+**Sandbox pod cannot be scheduled:**
 
-检查 node pool 是否有节点：
+Check whether the sandbox node pool has nodes:
+
 ```bash
 kubectl get nodes -l workload=sandbox
 ```
 
-如果没有节点，autoscaler 会自动创建（需要几分钟）。
+If there are none, the autoscaler will provision more (this can take a few minutes).
 
-**命令执行失败：**
+**Command execution fails:**
 
-检查 sandbox pod 日志：
+Check the sandbox pod logs:
+
 ```bash
 kubectl logs -n sbx-{sandbox_id} sandbox-{sandbox_id}
 ```
 
-**网络问题：**
+**Network issues:**
 
-检查 NetworkPolicy：
+Inspect the egress NetworkPolicy:
+
 ```bash
 kubectl describe networkpolicy -n sbx-{sandbox_id} deny-egress
 ```
 
-### 清理
+### Cleanup
 
-**删除特定 sandbox：**
+**Delete a specific sandbox:**
 
 ```bash
 kubectl delete namespace sbx-{sandbox_id}
 ```
 
-**删除所有 sandboxes：**
+**Delete all sandboxes:**
 
 ```bash
 kubectl delete namespaces -l managed-by=orchestrator
 ```
 
-**删除 orchestrator：**
+**Delete the orchestrator:**
 
 ```bash
 kubectl delete namespace orchestrator
 ```
 
-**删除整个 Azure 资源组：**
+**Delete the entire Azure resource group:**
 
 ```bash
 az group delete --name $RESOURCE_GROUP --yes --no-wait
 ```
 
-## 成本估算
+---
 
-基于 Azure East US 区域定价（2024）：
+## Cost estimate
 
-### 按小时计费
+Based on Azure East US pricing (2024):
 
-| 资源 | 规格 | 单价/小时 | 数量 | 小时成本 |
-|------|------|-----------|------|----------|
+### Hourly
+
+| Resource | Spec | $/hour | Count | Hourly cost |
+|----------|------|--------|-------|-------------|
 | System nodes | Standard_D4s_v5 | ~$0.23 | 3 | ~$0.69 |
-| Sandbox nodes (active) | Standard_D8s_v5 | ~$0.46 | 变动 | $0.46 × N |
-| AKS 控制平面 | 免费层 | $0 | 1 | $0 |
+| Sandbox nodes (active) | Standard_D8s_v5 | ~$0.46 | variable | $0.46 × N |
+| AKS control plane | Free tier | $0 | 1 | $0 |
 | ACR | Standard | ~$0.007 | 1 | ~$0.007 |
-| Log Analytics | 按数据量 | ~$2.3/GB | - | 变动 |
+| Log Analytics | Per GB | ~$2.3/GB | — | variable |
 
-### 月度估算（示例）
+### Monthly (examples)
 
-**最小配置**（无 sandbox 负载）：
-- 3 × System nodes: ~$500/月
-- ACR: ~$5/月
-- Log Analytics: ~$50/月（估计 20GB/月）
-- **总计**: ~$555/月
+**Minimal (no sandbox load):**
 
-**典型负载**（平均 10 个活动 sandboxes）：
-- System nodes: ~$500/月
-- 10 × Sandbox nodes: ~$3,350/月
-- ACR + Logs: ~$55/月
-- **总计**: ~$3,905/月
+- 3 × system nodes: ~$500/month
+- ACR: ~$5/month
+- Log Analytics: ~$50/month (assumes ~20 GB/month)
+- **Total**: ~$555/month
 
-**优化建议**：
-- 使用 Azure Reserved Instances（可节省 30-50%）
-- 调整 node pool autoscaler 参数
-- 设置合理的 sandbox TTL
-- 使用 spot instances 作为 sandbox nodes（可节省 70-90%）
+**Typical (10 active sandboxes on average):**
 
-## 性能调优
+- System nodes: ~$500/month
+- 10 × sandbox nodes: ~$3,350/month
+- ACR + Logs: ~$55/month
+- **Total**: ~$3,905/month
 
-### Orchestrator 性能
+**Optimization tips:**
 
-- **并发执行数**: 调整 `MAX_CONCURRENT_EXECS`（默认 20）
-- **Replicas**: 增加 orchestrator replicas 处理更多 API 请求
-- **资源**: 增加 orchestrator pod 的 CPU/内存限制
+- Use Azure Reserved Instances (30–50% savings)
+- Tune node pool autoscaler settings
+- Set a sensible sandbox TTL
+- Use spot instances for the sandbox node pool (70–90% savings)
 
-### Sandbox 性能
+---
 
-- **Node 规格**: 根据工作负载选择合适的 VM 大小
-- **Autoscaler**: 调整 min/max 节点数
-- **资源限制**: 调整 sandbox pod 的 CPU/内存
+## Performance tuning
 
-### 网络性能
+### Orchestrator
 
-- **NetworkPolicy**: 如不需要严格隔离，可设置 `block_network: false`
-- **Pod 网络**: 考虑使用 Azure CNI Overlay 模式
+- **Concurrency**: tune `MAX_CONCURRENT_EXECS` (default 20)
+- **Replicas**: increase orchestrator replicas to handle more API traffic
+- **Resources**: raise CPU/memory limits on the orchestrator pod
+
+### Sandbox
+
+- **Node spec**: pick a VM size that matches your workload
+- **Autoscaler**: tune min/max node counts
+- **Resource limits**: adjust per-pod CPU/memory
+
+### Networking
+
+- **NetworkPolicy**: if strict isolation is not required, set `block_network: false`
+- **Pod networking**: consider Azure CNI Overlay mode

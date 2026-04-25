@@ -4,11 +4,9 @@ Reference for the Orchard orchestrator HTTP API. All endpoints require an `X-API
 
 ---
 
-## 使用指南
+## Endpoints
 
-### API 端点
-
-#### 1. 创建 Sandbox
+### 1. Create a sandbox
 
 ```bash
 POST /sandboxes
@@ -25,7 +23,7 @@ X-API-Key: your-api-key
 }
 ```
 
-响应：
+Response:
 ```json
 {
   "sandbox_id": "abc12345",
@@ -39,7 +37,7 @@ X-API-Key: your-api-key
 }
 ```
 
-#### 2. 执行命令（异步）
+### 2. Execute a command (asynchronous)
 
 ```bash
 POST /sandboxes/{sandbox_id}/exec
@@ -55,7 +53,7 @@ X-API-Key: your-api-key
 }
 ```
 
-响应：
+Response:
 ```json
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -63,14 +61,14 @@ X-API-Key: your-api-key
 }
 ```
 
-#### 3. 查询 Job 状态
+### 3. Query job status
 
 ```bash
 GET /jobs/{job_id}
 X-API-Key: your-api-key
 ```
 
-响应：
+Response:
 ```json
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -86,9 +84,9 @@ X-API-Key: your-api-key
 }
 ```
 
-可能的状态：`queued`, `running`, `succeeded`, `failed`
+Possible statuses: `queued`, `running`, `succeeded`, `failed`.
 
-#### 4. 应用 Git Patch
+### 4. Apply a git patch
 
 ```bash
 POST /sandboxes/{sandbox_id}/apply_patch
@@ -101,7 +99,7 @@ X-API-Key: your-api-key
 }
 ```
 
-响应：
+Response:
 ```json
 {
   "success": true,
@@ -111,14 +109,14 @@ X-API-Key: your-api-key
 }
 ```
 
-#### 5. 删除 Sandbox
+### 5. Delete a sandbox
 
 ```bash
 DELETE /sandboxes/{sandbox_id}
 X-API-Key: your-api-key
 ```
 
-响应：
+Response:
 ```json
 {
   "status": "deleted",
@@ -126,20 +124,20 @@ X-API-Key: your-api-key
 }
 ```
 
-#### 6. 获取 Sandbox 信息
+### 6. Get sandbox info
 
 ```bash
 GET /sandboxes/{sandbox_id}
 X-API-Key: your-api-key
 ```
 
-#### 7. 健康检查
+### 7. Health check
 
 ```bash
 GET /health
 ```
 
-#### 8. 上传文件
+### 8. Upload a file
 
 ```bash
 POST /sandboxes/{sandbox_id}/files
@@ -152,7 +150,7 @@ X-API-Key: your-api-key
 }
 ```
 
-响应：
+Response:
 ```json
 {
   "success": true,
@@ -161,14 +159,14 @@ X-API-Key: your-api-key
 }
 ```
 
-#### 9. 下载文件
+### 9. Download a file
 
 ```bash
 GET /sandboxes/{sandbox_id}/files?path=/workspace/test.py
 X-API-Key: your-api-key
 ```
 
-响应：
+Response:
 ```json
 {
   "path": "/workspace/test.py",
@@ -177,14 +175,14 @@ X-API-Key: your-api-key
 }
 ```
 
-#### 10. 列出文件
+### 10. List files
 
 ```bash
 GET /sandboxes/{sandbox_id}/files/list?path=/workspace
 X-API-Key: your-api-key
 ```
 
-响应：
+Response:
 ```json
 {
   "path": "/workspace",
@@ -193,70 +191,73 @@ X-API-Key: your-api-key
     {"name": "src", "type": "directory", "size": "4096"}
   ]
 }
-
-### Python Client 使用
-
-安装依赖：
-
-```bash
-pip install requests aiohttp
 ```
 
-**基本使用（同步客户端）：**
+---
+
+## Python client usage
+
+Install dependencies:
+
+```bash
+pip install orchard
+```
+
+**Basic usage (synchronous client):**
 
 ```python
 from orchard import SandboxClient
 import os
 
-# 方法 1: 通过环境变量设置 API Key
+# Option 1: configure the API key via environment variable
 os.environ["SANDBOX_API_KEY"] = "your-api-key"
 client = SandboxClient("http://localhost:8000")
 
-# 方法 2: 直接传入 API Key
+# Option 2: pass the API key directly
 client = SandboxClient("http://localhost:8000", api_key="your-api-key")
 
-# 检查健康状态
+# Health check
 print(client.health())
 
-# 创建 sandbox（自动清理）
+# Create a sandbox (auto-cleanup via context manager)
 with client.create_sandbox("python:3.11-slim") as sandbox:
-    # 执行命令
+    # Run a shell command
     result = sandbox.exec("echo 'Hello World'")
     print(f"Exit code: {result.exit_code}")
     print(f"Output: {result.stdout}")
-    
-    # 执行 Python 代码
+
+    # Run Python code
     result = sandbox.exec([
         "python", "-c",
         "print('Hello from Python')"
     ])
     print(result.stdout)
-    
-    # 创建文件
+
+    # Write a file
     sandbox.exec("echo 'content' > /workspace/test.txt")
-    
-    # 读取文件
+
+    # Read a file
     result = sandbox.exec("cat /workspace/test.txt")
     print(result.stdout)
-    
-# Sandbox 自动删除
+
+# Sandbox is deleted automatically on context exit
 ```
 
-**异步执行（不等待）：**
+**Asynchronous execution (no wait):**
 
 ```python
-# 提交任务但不等待
+# Submit a job without waiting for it to complete
 result = sandbox.exec("long_running_command", wait=False)
 print(f"Job submitted: {result.job_id}")
 
-# 稍后查询
+# Poll for completion later
 import time
 time.sleep(5)
 result = client.get_job(result.job_id)
 print(f"Status: {result.status}")
 ```
 
-**应用 Patch：**
+**Apply a patch:**
 
 ```python
 patch = """--- a/file.py
@@ -275,47 +276,47 @@ else:
     print(f"Error: {result.get('stderr')}")
 ```
 
-**手动管理（无 context manager）：**
+**Manual lifecycle management (no context manager):**
 
 ```python
-# 创建（可自定义 CPU/内存/超时）
+# Create with custom CPU / memory / timeout
 sandbox = client.create_sandbox(
     "ubuntu:22.04",
     cpu="8",
     memory="32Gi",
-    timeout=7200  # 2 hours
+    timeout=7200,  # 2 hours
 )
 
 try:
     result = sandbox.exec("apt-get update")
-    # ... 其他操作
+    # ... other operations
 finally:
-    # 清理
+    # Always clean up
     sandbox.delete()
 ```
 
-**文件操作：**
+**File operations:**
 
 ```python
-# 上传文件
+# Upload a local file
 sandbox.upload_file("local_file.py", "/workspace/remote_file.py")
 
-# 上传内容
+# Upload in-memory content
 sandbox.upload_content(b"print('hello')", "/workspace/hello.py")
 
-# 下载文件
+# Download to a local path
 sandbox.download_file("/workspace/output.txt", "local_output.txt")
 
-# 下载内容
+# Download into memory
 content = sandbox.download_content("/workspace/output.txt")
 
-# 列出文件
+# List files
 files = sandbox.list_files("/workspace")
 for f in files:
     print(f"{f['name']} ({f['type']})")
 ```
 
-**异步客户端：**
+**Async client:**
 
 ```python
 import asyncio
