@@ -14,7 +14,7 @@ This is a **sandbox orchestration service** running on Azure AKS, designed for m
    - `job_store.py` / `redis_job_store.py` — Job state storage (in-memory or Redis for multi-replica)
    - `pod_watcher.py` — K8s Watch/Informer for cached pod status
 
-3. **Sandbox Agent** (`agent/server.py`) — Lightweight FastAPI server injected into every sandbox pod. Handles `/exec`, `/files/upload`, `/files/download`, `/files/list`. Injected via init container (`Dockerfile.agent-injector`) that bundles a self-contained Python interpreter so it works with ANY user image.
+3. **Sandbox Agent** (`agent/server.py`) — Lightweight FastAPI server injected into every sandbox pod. Handles `/exec`, `/files/upload`, `/files/download`, `/files/list`. Injected via init container (`docker/agent-injector.Dockerfile`) that bundles a self-contained Python interpreter so it works with ANY user image.
 
 ### Exec flow
 
@@ -22,9 +22,9 @@ Client calls `POST /sandboxes/{id}/exec` with `wait=True` → orchestrator runs 
 
 ### Container images
 
-- `Dockerfile` — Orchestrator (`python -m server.main`)
-- `Dockerfile.sandbox` — Sandbox with baked-in agent (for known images)
-- `Dockerfile.agent-injector` — Init container that copies agent + bundled Python into any user image via emptyDir volume
+- `docker/orchestrator.Dockerfile` — Orchestrator (`python -m server.main`)
+- `docker/sandbox.Dockerfile` — Sandbox with baked-in agent (for known images)
+- `docker/agent-injector.Dockerfile` — Init container that copies agent + bundled Python into any user image via emptyDir volume
 
 ## Build, Test, and Lint
 
@@ -53,7 +53,7 @@ python tests/test_files.py
 python tests/test_file_ops.py
 
 # Build container images (requires ACR access)
-./scripts/build_push.sh
+./deploy/scripts/build_push.sh
 ```
 
 ## Key Conventions

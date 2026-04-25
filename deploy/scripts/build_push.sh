@@ -6,7 +6,7 @@ set -euo pipefail
 ###############################################################################
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Load Azure configuration if available
 if [ -f "$PROJECT_ROOT/.azure-config" ]; then
@@ -18,7 +18,7 @@ fi
 if [ -z "${ACR_NAME:-}" ]; then
     echo "Error: ACR_NAME is not set"
     echo "Either:"
-    echo "  1. Run scripts/deploy_aks.sh first, or"
+    echo "  1. Run deploy/scripts/deploy_aks.sh first, or"
     echo "  2. Set ACR_NAME environment variable"
     echo ""
     echo "Example: export ACR_NAME=myacr"
@@ -69,7 +69,7 @@ echo ""
 # ---- Orchestrator image ----
 if [[ "$BUILD_TARGET" == "all" || "$BUILD_TARGET" == "orchestrator" ]]; then
     echo "Building orchestrator image..."
-    docker build -t "$FULL_IMAGE" .
+    docker build -f docker/orchestrator.Dockerfile -t "$FULL_IMAGE" .
     echo "✓ Image built: $FULL_IMAGE"
     echo ""
 
@@ -82,7 +82,7 @@ fi
 # ---- Sandbox image (with agent baked in — optional, for python-only use) ----
 if [[ "$BUILD_TARGET" == "all" || "$BUILD_TARGET" == "sandbox" ]]; then
     echo "Building sandbox image (with in-pod agent)..."
-    docker build -f Dockerfile.sandbox -t "$FULL_SANDBOX_IMAGE" .
+    docker build -f docker/sandbox.Dockerfile -t "$FULL_SANDBOX_IMAGE" .
     echo "✓ Image built: $FULL_SANDBOX_IMAGE"
     echo ""
 
@@ -95,7 +95,7 @@ fi
 # ---- Agent-injector init container image ----
 if [[ "$BUILD_TARGET" == "all" || "$BUILD_TARGET" == "agent-injector" ]]; then
     echo "Building agent-injector image (init container for any custom image)..."
-    docker build -f Dockerfile.agent-injector -t "$FULL_AGENT_INJECTOR_IMAGE" .
+    docker build -f docker/agent-injector.Dockerfile -t "$FULL_AGENT_INJECTOR_IMAGE" .
     echo "✓ Image built: $FULL_AGENT_INJECTOR_IMAGE"
     echo ""
 
@@ -147,5 +147,5 @@ echo "  $0 sandbox        # build sandbox only (agent baked in)"
 echo "  $0 agent-injector # build agent-injector init container only"
 echo ""
 echo "Next step: Deploy to Kubernetes"
-echo "  ./scripts/deploy_k8s.sh"
+echo "  ./deploy/scripts/deploy_k8s.sh"
 echo "============================================"

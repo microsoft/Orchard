@@ -7,10 +7,11 @@ set -euo pipefail
 ###############################################################################
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+# scripts live at deploy/scripts/, project root is two levels up
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Change to project root
 cd "$PROJECT_ROOT"
 
 # Run the infrastructure deployment
-bash infra/deploy_aks.sh "$@"
+bash deploy/azure/deploy_aks.sh "$@"

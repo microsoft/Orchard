@@ -253,38 +253,50 @@ Default: 3 retries with exponential backoff (1s, 2s, 4s).
 
 ```
 .
-├── server/                # FastAPI 服务核心代码
-│   ├── main.py           # 入口点
-│   ├── api.py            # API 路由定义
-│   ├── settings.py       # 配置管理
-│   ├── k8s_client.py     # Kubernetes 客户端封装
-│   ├── sandbox_manager.py # Sandbox 生命周期管理
-│   ├── exec_manager.py   # 命令执行管理
-│   ├── job_store.py      # Job 存储（内存实现）
-│   ├── redis_store.py    # Redis 存储（多副本支持）
-│   └── utils.py          # 工具函数
-├── client/               # Python 客户端库
-│   └── sandbox_client.py # Modal 风格的客户端
-├── k8s/                  # Kubernetes 清单
-│   ├── namespace.yaml
-│   ├── serviceaccount.yaml
-│   ├── rbac.yaml
-│   ├── configmap.yaml
-│   ├── secret.yaml       # API Keys
-│   ├── redis.yaml        # Redis 部署
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   └── optional.yaml     # HPA, PDB, Ingress
-├── infra/                # Azure 基础设施
-│   └── deploy_aks.sh     # AKS 集群创建脚本
-├── scripts/              # 部署和测试脚本
-│   ├── deploy_aks.sh     # 部署 AKS
-│   ├── build_push.sh     # 构建并推送镜像
-│   ├── deploy_k8s.sh     # 部署到 K8s
-│   └── smoke_test.sh     # 冒烟测试
-├── Dockerfile            # Orchestrator 镜像
-├── pyproject.toml        # Python 项目配置
-└── README.md            # 本文档
+├── src/orchard/          # Python SDK (installable: `pip install orchard`)
+│   ├── __init__.py
+│   └── client.py         # Modal 风格的同步/异步客户端
+├── server/               # FastAPI orchestrator 服务（运行在 AKS 中）
+│   ├── main.py
+│   ├── api.py
+│   ├── settings.py
+│   ├── k8s_client.py
+│   ├── sandbox_manager.py
+│   ├── exec_manager.py
+│   ├── job_store.py
+│   ├── redis_store.py
+│   └── utils.py
+├── agent/                # 注入到每个 sandbox pod 的轻量 agent
+│   ├── server.py
+│   └── requirements.txt
+├── docker/               # 所有 Dockerfile
+│   ├── orchestrator.Dockerfile
+│   ├── sandbox.Dockerfile
+│   └── agent-injector.Dockerfile
+├── deploy/
+│   ├── azure/            # Azure 基础设施脚本（AKS, ACR, Log Analytics）
+│   │   └── deploy_aks.sh
+│   ├── k8s/              # Kubernetes 清单
+│   │   ├── namespace.yaml
+│   │   ├── serviceaccount.yaml
+│   │   ├── rbac.yaml
+│   │   ├── configmap.yaml
+│   │   ├── secret.example.yaml  # API Keys 模板（请复制为 secret.yaml）
+│   │   ├── redis.yaml
+│   │   ├── deployment.yaml
+│   │   ├── service.yaml
+│   │   └── optional.yaml        # HPA, PDB, Ingress
+│   └── scripts/          # 部署和测试脚本
+│       ├── deploy_aks.sh
+│       ├── build_push.sh
+│       ├── deploy_k8s.sh
+│       └── smoke_test.sh
+├── examples/
+├── docs/
+├── tests/
+├── pyproject.toml
+├── LICENSE
+└── README.md
 ```
 
 ## 快速开始
@@ -306,10 +318,10 @@ Default: 3 retries with exponential backoff (1s, 2s, 4s).
 cd azure-modal
 
 # 使脚本可执行
-chmod +x scripts/*.sh infra/*.sh
+chmod +x deploy/scripts/*.sh deploy/azure/*.sh
 
 # 部署 AKS（约 10-15 分钟）
-./scripts/deploy_aks.sh
+./deploy/scripts/deploy_aks.sh
 ```
 
 **可选配置（通过环境变量）：**
@@ -319,7 +331,7 @@ export RESOURCE_GROUP="my-sandbox-rg"
 export LOCATION="westus2"
 export CLUSTER_NAME="my-aks"
 export ACR_NAME="mysandboxacr$(date +%s)"
-./scripts/deploy_aks.sh
+./deploy/scripts/deploy_aks.sh
 ```
 
 脚本会创建：
@@ -355,11 +367,11 @@ kubectl get nodes
 
 ```bash
 # 构建镜像并推送到 ACR
-./scripts/build_push.sh
+./deploy/scripts/build_push.sh
 
 # 如果 .azure-config 不存在，手动指定 ACR：
 export ACR_NAME=your-acr-name
-./scripts/build_push.sh
+./deploy/scripts/build_push.sh
 ```
 
 这会：
@@ -372,7 +384,7 @@ export ACR_NAME=your-acr-name
 
 ```bash
 # 部署所有 K8s 资源
-./scripts/deploy_k8s.sh
+./deploy/scripts/deploy_k8s.sh
 ```
 
 这会创建：
@@ -407,17 +419,17 @@ kubectl port-forward -n orchestrator svc/sandbox-orchestrator 8000:80
 
 **方法 2: Ingress（生产环境）**
 
-编辑 `k8s/optional.yaml` 中的 Ingress 配置，设置你的域名和 TLS 证书，然后：
+编辑 `deploy/k8s/optional.yaml` 中的 Ingress 配置，设置你的域名和 TLS 证书，然后：
 
 ```bash
-kubectl apply -f k8s/optional.yaml
+kubectl apply -f deploy/k8s/optional.yaml
 ```
 
 ### 步骤 6: 运行冒烟测试
 
 ```bash
 # 确保 port-forward 在运行
-./scripts/smoke_test.sh
+./deploy/scripts/smoke_test.sh
 ```
 
 测试会：
@@ -764,7 +776,7 @@ asyncio.run(main())
 
 ## 配置
 
-### 环境变量（在 k8s/configmap.yaml 和 k8s/secret.yaml 中配置）
+### 环境变量（在 deploy/k8s/configmap.yaml 和 deploy/k8s/secret.yaml 中配置）
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -792,7 +804,7 @@ asyncio.run(main())
 修改配置后重新部署：
 
 ```bash
-kubectl apply -f k8s/configmap.yaml
+kubectl apply -f deploy/k8s/configmap.yaml
 kubectl rollout restart deployment/sandbox-orchestrator -n orchestrator
 ```
 
@@ -807,7 +819,7 @@ kubectl rollout restart deployment/sandbox-orchestrator -n orchestrator
 - **超时**: 3600秒 (1小时)
 
 **设置全局默认值**：
-1. 编辑 `k8s/configmap.yaml` 中的 `DEFAULT_CPU` 和 `DEFAULT_MEMORY`
+1. 编辑 `deploy/k8s/configmap.yaml` 中的 `DEFAULT_CPU` 和 `DEFAULT_MEMORY`
 2. 重新部署 ConfigMap
 3. 重启 orchestrator deployment
 
@@ -1257,7 +1269,7 @@ Redis 用于多副本之间共享 sandbox 状态，默认已启用。
 
 **部署 Redis：**
 ```bash
-kubectl apply -f k8s/redis.yaml
+kubectl apply -f deploy/k8s/redis.yaml
 ```
 
 **禁用 Redis（仅单副本）：**
