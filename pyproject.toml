@@ -7,6 +7,7 @@ name = "aks_modal"
 version = "0.1.0"
 description = "Azure AKS-based sandbox orchestration service"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.104.0",

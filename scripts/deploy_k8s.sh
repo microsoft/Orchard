@@ -73,6 +73,12 @@ echo "4. Creating config map..."
 kubectl apply -f "$TEMP_CONFIGMAP"
 
 echo "5. Creating API keys secret..."
+if [ ! -f k8s/secret.yaml ]; then
+    echo "ERROR: k8s/secret.yaml not found."
+    echo "       Copy k8s/secret.example.yaml to k8s/secret.yaml and populate API_KEYS."
+    echo "       You can generate keys with: python k8s/gen_keys.py"
+    exit 1
+fi
 kubectl apply -f k8s/secret.yaml
 
 echo "6. Creating shared sandbox namespace..."

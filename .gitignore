@@ -76,3 +76,4 @@ htmlcov/
 # Kubernetes
 kubeconfig
 tests/timing_*.json
+k8s/secret.yaml
