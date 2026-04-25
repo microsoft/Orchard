@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-orchestrator-lb
+  namespace: orchestrator
+  labels:
+    app: sandbox-orchestrator
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-tcp-idle-timeout: "100"
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+  selector:
+    app: sandbox-orchestrator

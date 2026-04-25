@@ -1,0 +1,50 @@
+# OSWorld FastAPI Server - Windows Docker Image
+# This Dockerfile creates a Windows container that can execute Windows desktop actions directly
+# Note: Requires Windows containers mode in Docker Desktop
+
+# Use Windows Server Core as base
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+LABEL maintainer="OSWorld Team"
+LABEL description="FastAPI server for OS operations emulation on Windows"
+
+# Install Python using PowerShell
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# Download and install Python
+RUN Invoke-WebRequest -Uri https://www.python.org/ftp/python/3.11.7/python-3.11.7-amd64.exe -OutFile python-installer.exe; \
+    Start-Process python-installer.exe -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1' -Wait; \
+    Remove-Item python-installer.exe
+
+# Refresh PATH
+RUN [Environment]::SetEnvironmentVariable('Path', $env:Path + ';C:\Program Files\Python311;C:\Program Files\Python311\Scripts', [EnvironmentVariableTarget]::Machine)
+
+# Set working directory
+WORKDIR C:/app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Windows-specific dependencies
+RUN pip install --no-cache-dir pywinauto pywin32
+
+# Copy the FastAPI server
+COPY main.py .
+
+# Create directories for screenshots and recordings
+RUN New-Item -ItemType Directory -Force -Path C:/temp/screenshots
+RUN New-Item -ItemType Directory -Force -Path C:/temp/recordings
+
+# Expose the server port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD powershell -Command "try { Invoke-WebRequest -Uri http://localhost:5000/ -UseBasicParsing; exit 0 } catch { exit 1 }"
+
+# Start the FastAPI server
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000"]
+

@@ -1,0 +1,290 @@
+# OSWorld FastAPI Server - Interactive Mode with VNC
+# Allows direct GUI interaction via VNC client or web browser (noVNC)
+# Same GNOME desktop as headless mode, but with remote desktop access
+
+FROM ubuntu:22.04
+
+LABEL maintainer="OSWorld Team"
+LABEL description="FastAPI server for OS operations emulation - Interactive mode with VNC"
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Set display for GUI operations
+ENV DISPLAY=:99
+
+# Create user account (matching OSWorld VM: username=user, password=password)
+RUN useradd -m -s /bin/bash user && \
+    echo "user:password" | chpasswd && \
+    usermod -aG sudo user
+
+# Fix potential apt issues
+RUN rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* && \
+    apt-get clean
+
+# Install GNOME desktop environment and system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    # Build tools
+    build-essential \
+    gcc \
+    g++ \
+    # Python
+    python3 \
+    python3-pip \
+    python3-dev \
+    python3-tk \
+    # Linux input device library
+    libevdev-dev \
+    # X11 and display utilities
+    xvfb \
+    x11-utils \
+    x11-xserver-utils \
+    xdotool \
+    wmctrl \
+    scrot \
+    xclip \
+    socat \
+    # VNC server
+    x11vnc \
+    # noVNC for web-based VNC access
+    novnc \
+    websockify \
+    # GNOME Desktop Environment
+    gnome-session \
+    gnome-shell \
+    gnome-terminal \
+    gnome-control-center \
+    gnome-tweaks \
+    nautilus \
+    # Desktop icons support (nemo works better in containers)
+    nemo \
+    # Fallback window manager (for headless)
+    metacity \
+    mutter \
+    # Background setting
+    feh \
+    # Lightweight panel/taskbar
+    tint2 \
+    # PCManFM for desktop management (alternative to nemo)
+    pcmanfm \
+    # Terminal
+    xterm \
+    # Accessibility support (AT-SPI)
+    at-spi2-core \
+    python3-pyatspi \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    # LibreOffice (full suite)
+    libreoffice \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    libreoffice-gnome \
+    # GIMP
+    gimp \
+    # VLC media player
+    vlc \
+    # Video recording
+    ffmpeg \
+    # Screen capture
+    imagemagick \
+    gnome-screenshot \
+    # Fonts
+    fonts-liberation \
+    fonts-dejavu-core \
+    fonts-dejavu \
+    fonts-freefont-ttf \
+    fonts-ubuntu \
+    fonts-noto \
+    fonts-noto-cjk \
+    # GTK and GUI libraries
+    libgtk-3-0 \
+    libglib2.0-0 \
+    # X11 development libraries
+    libx11-dev \
+    libxext-dev \
+    libxrender-dev \
+    libxcursor-dev \
+    libxfixes-dev \
+    libxi-dev \
+    libxrandr-dev \
+    libxcomposite-dev \
+    libxdamage-dev \
+    # D-Bus
+    dbus-x11 \
+    # Network utilities
+    curl \
+    wget \
+    git \
+    ca-certificates \
+    gnupg \
+    # Text editors
+    gedit \
+    # Additional utilities
+    sudo \
+    adwaita-icon-theme \
+    gnome-themes-extra \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Chromium browser
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium-browser \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create Chromium desktop entry with remote debugging enabled
+# Port 1337 is used internally, forwarded to 9222 via socat (matching OSWorld VM setup)
+RUN mkdir -p /home/user/.local/share/applications && \
+    echo '[Desktop Entry]\n\
+Version=1.0\n\
+Name=Chromium Web Browser\n\
+Exec=/usr/bin/chromium-browser --remote-debugging-port=1337 --remote-debugging-address=0.0.0.0 %U\n\
+Terminal=false\n\
+Type=Application\n\
+Icon=chromium-browser\n\
+Categories=Network;WebBrowser;' > /home/user/.local/share/applications/chromium-browser.desktop
+
+# Also update the system-wide desktop entry for Chromium
+RUN if [ -f /usr/share/applications/chromium-browser.desktop ]; then \
+    sed -i 's|Exec=/usr/bin/chromium-browser|Exec=/usr/bin/chromium-browser --remote-debugging-port=1337 --remote-debugging-address=0.0.0.0|g' \
+    /usr/share/applications/chromium-browser.desktop; \
+    fi
+
+# Disable Chrome/Chromium keyring password prompt
+RUN mkdir -p /home/user/.local/share/keyrings && \
+    touch /home/user/.local/share/keyrings/login.keyring && \
+    chown -R user:user /home/user/.local
+
+# Create working directory
+WORKDIR /app
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Copy the FastAPI server and pyxcursor module
+COPY main.py .
+COPY pyxcursor.py .
+
+# Copy and setup entrypoint script
+COPY entrypoint-interactive.sh ./entrypoint.sh
+RUN chmod +x entrypoint.sh
+
+# Create directories for screenshots and recordings
+RUN mkdir -p /tmp/screenshots /tmp/recordings
+
+# Create user home directories
+RUN mkdir -p /home/user/Desktop \
+             /home/user/Documents \
+             /home/user/Downloads \
+             /home/user/Pictures \
+             /home/user/Videos && \
+    chown -R user:user /home/user
+
+# Create desktop shortcuts for common applications (matching OSWorld VM setup)
+# Note: Chromium uses port 1337 which is forwarded to 9222 via socat
+RUN echo '[Desktop Entry]\n\
+Version=1.0\n\
+Type=Application\n\
+Name=Chromium\n\
+Exec=/usr/bin/chromium-browser --remote-debugging-port=1337 --remote-debugging-address=0.0.0.0 %U\n\
+Icon=chromium-browser\n\
+Terminal=false\n\
+Categories=Network;WebBrowser;' > /home/user/Desktop/chromium.desktop && \
+    echo '[Desktop Entry]\n\
+Version=1.0\n\
+Type=Application\n\
+Name=Files\n\
+Exec=nautilus --new-window\n\
+Icon=org.gnome.Nautilus\n\
+Terminal=false\n\
+Categories=Utility;FileManager;' > /home/user/Desktop/files.desktop && \
+    echo '[Desktop Entry]\n\
+Version=1.0\n\
+Type=Application\n\
+Name=Terminal\n\
+Exec=gnome-terminal\n\
+Icon=org.gnome.Terminal\n\
+Terminal=false\n\
+Categories=System;TerminalEmulator;' > /home/user/Desktop/terminal.desktop && \
+    echo '[Desktop Entry]\n\
+Version=1.0\n\
+Type=Application\n\
+Name=LibreOffice Writer\n\
+Exec=libreoffice --writer %U\n\
+Icon=libreoffice-writer\n\
+Terminal=false\n\
+Categories=Office;WordProcessor;' > /home/user/Desktop/writer.desktop && \
+    echo '[Desktop Entry]\n\
+Version=1.0\n\
+Type=Application\n\
+Name=LibreOffice Calc\n\
+Exec=libreoffice --calc %U\n\
+Icon=libreoffice-calc\n\
+Terminal=false\n\
+Categories=Office;Spreadsheet;' > /home/user/Desktop/calc.desktop && \
+    echo '[Desktop Entry]\n\
+Version=1.0\n\
+Type=Application\n\
+Name=LibreOffice Impress\n\
+Exec=libreoffice --impress %U\n\
+Icon=libreoffice-impress\n\
+Terminal=false\n\
+Categories=Office;Presentation;' > /home/user/Desktop/impress.desktop && \
+    echo '[Desktop Entry]\n\
+Version=1.0\n\
+Type=Application\n\
+Name=GIMP\n\
+Exec=gimp %U\n\
+Icon=gimp\n\
+Terminal=false\n\
+Categories=Graphics;' > /home/user/Desktop/gimp.desktop && \
+    echo '[Desktop Entry]\n\
+Version=1.0\n\
+Type=Application\n\
+Name=VLC media player\n\
+Exec=/usr/bin/vlc --started-from-file %U\n\
+Icon=vlc\n\
+Terminal=false\n\
+Categories=AudioVideo;Player;' > /home/user/Desktop/vlc.desktop && \
+    chmod +x /home/user/Desktop/*.desktop && \
+    chown -R user:user /home/user/Desktop
+
+# Configure VLC HTTP interface
+RUN mkdir -p /home/user/.config/vlc && \
+    echo '[lua]\n\
+http-host=0.0.0.0\n\
+http-port=8080\n\
+http-password=password' > /home/user/.config/vlc/vlcrc && \
+    chown -R user:user /home/user/.config
+
+# Set up VNC password (password: osworld)
+RUN mkdir -p /home/user/.vnc && \
+    x11vnc -storepasswd osworld /home/user/.vnc/passwd && \
+    chown -R user:user /home/user/.vnc
+
+# Enable accessibility
+RUN mkdir -p /home/user/.config/dconf && \
+    chown -R user:user /home/user/.config
+
+# Create symlink for python command
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Expose ports
+# 5000 - FastAPI server
+# 5900 - VNC server
+# 6080 - noVNC web interface
+# 9222 - Chrome remote debugging
+# 8080 - VLC HTTP interface
+EXPOSE 5000 5900 6080 9222 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:5000/ || exit 1
+
+# Use entrypoint script
+ENTRYPOINT ["/app/entrypoint.sh"]
+

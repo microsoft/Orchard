@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orchestrator-config
+  namespace: orchestrator
+  labels:
+    app: sandbox-orchestrator
+data:
+  # Service settings
+  SERVICE_NAME: "sandbox-orchestrator"
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  
+  # Kubernetes settings
+  IN_CLUSTER: "true"
+  NAMESPACE_PREFIX: "sbx-"
+  ORCHESTRATOR_NAMESPACE: "orchestrator"
+  SANDBOX_NAMESPACE: "sandbox-pods"
+  
+  # Sandbox settings
+  DEFAULT_CPU: "4"
+  DEFAULT_MEMORY: "16Gi"
+  DEFAULT_WORKING_DIR: "/workspace"
+  DEFAULT_BLOCK_NETWORK: "true"
+  
+  # Execution settings
+  MAX_CONCURRENT_EXECS: "400"
+  DEFAULT_TIMEOUT_SECONDS: "300"
+  
+  # K8s API throttling
+  K8S_API_CONCURRENCY: "100"
+  K8S_CONNECT_TIMEOUT: "10"
+  K8S_API_TIMEOUT: "30"
+  K8S_API_RETRIES: "3"
+  K8S_API_POOL_SIZE: "100"
+  K8S_EXEC_CONCURRENCY: "200"
+  K8S_EXEC_RETRIES: "3"
+  MAX_CONCURRENT_CREATES: "20"
+  
+  # Agent settings (in-pod FastAPI command server)
+  AGENT_PORT: "8080"
+  AGENT_CONNECT_TIMEOUT: "5"
+  AGENT_POOL_SIZE: "500"
+  AGENT_INJECTOR_IMAGE: "${ACR_NAME}.azurecr.io/sandbox-agent-injector:latest"
+  
+  # TTL settings
+  SANDBOX_TTL_HOURS: "2"
+  ORPHAN_JOB_TTL_HOURS: "1"
+  CLEANUP_INTERVAL_SECONDS: "900"
+  
+  # Heartbeat settings
+  HEARTBEAT_TIMEOUT_SECONDS: "600"
+  HEARTBEAT_CLEANUP_ENABLED: "true"
+  
+  # Logging
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"

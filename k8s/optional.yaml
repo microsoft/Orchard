@@ -1,0 +1,75 @@
+---
+# Optional: Horizontal Pod Autoscaler
+# NOTE: Keep minReplicas=1 until we implement shared state (Redis/DB)
+# Multiple replicas cause race conditions in reconcile_sandboxes
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sandbox-orchestrator
+  namespace: orchestrator
+  labels:
+    app: sandbox-orchestrator
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sandbox-orchestrator
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# Optional: Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sandbox-orchestrator
+  namespace: orchestrator
+  labels:
+    app: sandbox-orchestrator
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sandbox-orchestrator
+
+---
+# Optional: Ingress (requires ingress controller like nginx)
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: sandbox-orchestrator
+#   namespace: orchestrator
+#   labels:
+#     app: sandbox-orchestrator
+#   annotations:
+#     kubernetes.io/ingress.class: nginx
+#     cert-manager.io/cluster-issuer: letsencrypt-prod
+# spec:
+#   tls:
+#     - hosts:
+#         - orchestrator.example.com
+#       secretName: orchestrator-tls
+#   rules:
+#     - host: orchestrator.example.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: sandbox-orchestrator
+#                 port:
+#                   number: 80
