@@ -114,6 +114,8 @@ Full walkthrough: [docs/deployment.md](docs/deployment.md).
 | [docs/api.md](docs/api.md) | REST API endpoints + configuration env vars |
 | [docs/deployment.md](docs/deployment.md) | AKS deployment, configuration, ops, cost estimates |
 | [docs/architecture.md](docs/architecture.md) | Architecture deep dive |
+| [docs/threat-model.md](docs/threat-model.md) | Object model, data flow & STRIDE threat model |
+| [docs/known-issues.md](docs/known-issues.md) | Known security issues / threat-model findings |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ## Development
