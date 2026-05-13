@@ -62,18 +62,55 @@ Three deployable artifacts live side by side, each with a different release form
 
 ## Quickstart
 
-### Install the SDK
+The first-time flow is **deploy → install → test**: stand up an orchestrator on
+your cluster, install the Python SDK, then run the SDK against the deployment
+you just created. If you already have access to a running orchestrator
+(e.g. one hosted by your team), skip step 1 and jump to step 2.
+
+### 1. Deploy your own orchestrator
+
+```bash
+# Provision Azure resources (AKS + ACR + Log Analytics)
+./deploy/scripts/deploy_aks.sh
+
+# Build and push container images
+./deploy/scripts/build_push.sh
+
+# Generate API keys and create the K8s secret
+python deploy/k8s/gen_keys.py
+cp deploy/k8s/secret.example.yaml deploy/k8s/secret.yaml
+# ...paste generated keys into deploy/k8s/secret.yaml...
+
+# Deploy to Kubernetes
+./deploy/scripts/deploy_k8s.sh
+
+# Smoke-test the deployment
+./deploy/scripts/smoke_test.sh
+```
+
+The smoke-test prints the orchestrator's reachable `base_url` and the API key
+to use. Export them so the SDK picks them up automatically:
+
+```bash
+export SANDBOX_BASE_URL="http://<orchestrator>:8000"
+export SANDBOX_API_KEY="<key-from-gen_keys.py>"
+```
+
+Full walkthrough (AKS provisioning, configuration, ops, cost estimates):
+[docs/deployment.md](docs/deployment.md).
+
+### 2. Install the SDK
 
 ```bash
 pip install -e .
 ```
 
-### Use the SDK against an existing orchestrator
+### 3. Test the SDK against your orchestrator
 
 ```python
 from orchard import SandboxClient
 
-with SandboxClient(base_url="http://<orchestrator>:8000", api_key="...") as client:
+with SandboxClient() as client:  # reads SANDBOX_BASE_URL / SANDBOX_API_KEY
     with client.create_sandbox("python:3.11-slim") as sandbox:
         result = sandbox.exec("echo 'hello from orchard'")
         print(result.stdout)
@@ -86,7 +123,7 @@ import asyncio
 from orchard import AsyncSandboxClient
 
 async def main():
-    async with AsyncSandboxClient() as client:  # reads SANDBOX_BASE_URL / SANDBOX_API_KEY
+    async with AsyncSandboxClient() as client:
         async with await client.create_sandbox("python:3.11-slim") as sandbox:
             print((await sandbox.exec("uname -a")).stdout)
 
@@ -94,29 +131,6 @@ asyncio.run(main())
 ```
 
 See [docs/client.md](docs/client.md) for the full SDK reference.
-
-### Deploy your own orchestrator
-
-```bash
-# 1. Provision Azure resources (AKS + ACR + Log Analytics)
-./deploy/scripts/deploy_aks.sh
-
-# 2. Build and push container images
-./deploy/scripts/build_push.sh
-
-# 3. Generate API keys and create the K8s secret
-python deploy/k8s/gen_keys.py
-cp deploy/k8s/secret.example.yaml deploy/k8s/secret.yaml
-# ...paste generated keys into deploy/k8s/secret.yaml...
-
-# 4. Deploy to Kubernetes
-./deploy/scripts/deploy_k8s.sh
-
-# 5. Smoke-test
-./deploy/scripts/smoke_test.sh
-```
-
-Full walkthrough: [docs/deployment.md](docs/deployment.md).
 
 ## Documentation
 
