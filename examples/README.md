@@ -23,3 +23,14 @@ execute commands, upload/download files, and apply git patches.
 ```bash
 python examples/getting_started.py
 ```
+
+### `swe/` — Orchard-SWE training recipe
+
+Placeholder for the SFT + RL training recipe that produced 67.5% on SWE-bench
+Verified. **Coming soon.** See [`swe/README.md`](swe/README.md).
+
+### `gui/` — Orchard-GUI training recipe
+
+Placeholder for the SFT + RL training recipe that produced 68.4% average across
+WebVoyager / Online-Mind2Web / DeepShop. **Coming soon.** See
+[`gui/README.md`](gui/README.md).
