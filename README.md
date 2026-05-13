@@ -14,8 +14,8 @@ in-pod execution agent. Azure AKS is the reference deployment, but the service
 is plain Kubernetes — any conformant cluster works.
 
 - 📄 **Paper:** *Orchard: An Open-Source Agentic Modeling Framework* (Peng et al., COLM 2026) — arXiv link coming soon
-- 🤗 **Dataset:** [`microsoft/Orchard`](https://huggingface.co/datasets/microsoft/Orchard) — 107,185 SWE agent trajectories across 2,788 repositories
-- 🗺️ **Roadmap:** RL training code, evaluation suite, and GUI/Claw recipes — see [Roadmap](#roadmap)
+- 🤗 **Dataset:** [`microsoft/Orchard`](https://huggingface.co/datasets/microsoft/Orchard) — `swe` (107K SWE trajectories) and `gui` (3,070 multimodal browser-navigation rollouts) subsets
+- 🗺️ **Roadmap:** training recipes, evaluation suite, and the Orchard-Claw recipe — see [Roadmap](#roadmap)
 
 ## What Orchard Env provides
 
@@ -143,32 +143,35 @@ recipes built on Orchard Env:
   **64.3%** on SWE-bench Verified after SFT and **67.5%** after SFT + RL, a
   +45.5-point lift over the base model and state-of-the-art among open-source
   models of comparable size.
-- **Orchard-GUI** — browser navigation. A 4B backbone trained on only ~2.6k
-  tasks averages **68.4%** across WebVoyager / Online-Mind2Web / DeepShop.
+- **Orchard-GUI** — browser navigation. Qwen3-VL-4B-Thinking trained on only
+  ~2.6k tasks reaches **68.4%** average across WebVoyager / Online-Mind2Web /
+  DeepShop (74.1 / 67.0 / 64.0) after SFT + RL — a +30.3-point lift over the
+  base 4B model.
 - **Orchard-Claw** — personal-assistant workflows. **73.9%** pass@3 on Claw-Eval
   with the ZeroClaw harness.
 
 References:
 
 - 📄 Paper: arXiv link coming soon (COLM 2026)
-- 🤗 SWE trajectory dataset: [`microsoft/Orchard`](https://huggingface.co/datasets/microsoft/Orchard) —
-  107,185 multi-turn SWE rollouts across 2,788 repositories, with verified
-  resolve labels (74,649 resolved · 32,536 unresolved).
-- 🤗 GUI trajectory dataset: `microsoft/Orchard-GUI` — coming soon. Browser-navigation
-  trajectories used to train the Orchard-GUI recipe.
+- 🤗 Trajectory datasets: [`microsoft/Orchard`](https://huggingface.co/datasets/microsoft/Orchard) — one repository ships two parallel subsets, both produced inside the same Orchard Env sandbox infrastructure:
+  - **`swe` config** — 107,185 multi-turn SWE rollouts across 2,788 repositories,
+    with verified resolve labels (74,649 resolved · 32,536 unresolved).
+  - **`gui` config** — 3,070 judge-verified successful per-step rollouts from a
+    web-browsing GUI agent across 409 WebVoyager-style tasks, each with a
+    rendered screenshot (multimodal).
 
 ## Roadmap
 
-This release ships Orchard Env — the environment-service foundation. Additional
-components from the paper will be released on top of it:
+This release ships Orchard Env — the environment-service foundation — alongside
+the SWE and GUI trajectory datasets ([`microsoft/Orchard`](https://huggingface.co/datasets/microsoft/Orchard)).
+Additional components from the paper will follow on top of Orchard Env:
 
-- **Orchard-SWE RL training code** — on-policy RL rollouts and policy
-  optimization that produced the 67.5% SWE-bench Verified result, built on
-  Orchard Env's sandbox interface.
+- **Training recipes (SFT + RL)** — the SFT and on-policy RL pipelines that
+  produced the 67.5% SWE-bench Verified and 68.4% GUI-average results, built
+  directly on Orchard Env's sandbox interface.
 - **Evaluation suite** — harness-agnostic evaluation pipelines (SWE-bench
-  Verified, SWE-bench Multilingual, Terminal-Bench 2.0) running on Orchard Env.
-- **Orchard-GUI** — browser-navigation agentic-modeling recipe and trajectory
-  data.
+  Verified, SWE-bench Multilingual, Terminal-Bench 2.0, WebVoyager /
+  Online-Mind2Web / DeepShop) running on Orchard Env.
 - **Orchard-Claw** — personal-assistant agentic-modeling recipe and trajectory
   data.
 
