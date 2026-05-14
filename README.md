@@ -1,5 +1,8 @@
 # Orchard
 
+> [!IMPORTANT]
+> **Release on hold — we will release the code soon.**
+
 **Orchard is an open-source framework for scalable agentic modeling**, built
 around a thin, reusable environment layer. At its core is **Orchard Env**, a
 Kubernetes-native service that exposes generic primitives — sandbox lifecycle,
