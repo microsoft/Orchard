@@ -9,11 +9,17 @@ same environment is reused for trajectory distillation, on-policy RL rollouts,
 and evaluation, so artifacts (datasets, recipes, models) remain portable across
 harnesses and domains.
 
+<p align="center">
+  <img src="docs/figures/orchard-architecture.png" alt="Orchard Overview." width="800">
+</p>
+
 This repository contains **Orchard Env**: the SDK, FastAPI orchestrator, and
 in-pod execution agent. Azure AKS is the reference deployment, but the service
-is plain Kubernetes — any conformant cluster works.
+is plain Kubernetes — any conformant cluster works. SFT and RL training
+recipes for **Orchard-SWE**, **Orchard-GUI**, and **Orchard-Claw** will follow
+on top of Orchard Env — see the [Roadmap](#roadmap).
 
-- 📄 **Paper:** *Orchard: An Open-Source Agentic Modeling Framework* (Peng et al., COLM 2026) — arXiv link coming soon
+- 📄 **Paper:** *Orchard: An Open-Source Agentic Modeling Framework* (Peng et al., arXiv 2026)
 - 🤗 **Dataset:** [`microsoft/Orchard`](https://huggingface.co/datasets/microsoft/Orchard) — `swe` (107K SWE trajectories) and `gui` (3,070 multimodal browser-navigation rollouts) subsets
 - 🗺️ **Roadmap:** training recipes, evaluation suite, and the Orchard-Claw recipe — see [Roadmap](#roadmap)
 
@@ -142,7 +148,6 @@ See [docs/client.md](docs/client.md) for the full SDK reference.
 | [docs/architecture.md](docs/architecture.md) | Architecture deep dive |
 | [docs/threat-model.md](docs/threat-model.md) | Object model, data flow & STRIDE threat model |
 | [docs/known-issues.md](docs/known-issues.md) | Known security issues / threat-model findings |
-| [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 All documents above describe Orchard Env (this repository); paper-level material
 lives in the references below.
@@ -150,7 +155,7 @@ lives in the references below.
 ## Paper & dataset
 
 The framework is described in **Orchard: An Open-Source Agentic Modeling
-Framework** (Peng et al., COLM 2026). The paper presents three agentic-modeling
+Framework** (Peng et al., arXiv 2026). The paper presents three agentic-modeling
 recipes built on Orchard Env:
 
 - **Orchard-SWE** — software engineering. Qwen3-30B-A3B-Thinking reaches
@@ -166,7 +171,7 @@ recipes built on Orchard Env:
 
 References:
 
-- 📄 Paper: arXiv link coming soon (COLM 2026)
+- 📄 Paper: arXiv preprint — link coming soon
 - 🤗 Trajectory datasets: [`microsoft/Orchard`](https://huggingface.co/datasets/microsoft/Orchard) — one repository ships two parallel subsets, both produced inside the same Orchard Env sandbox infrastructure:
   - **`swe` config** — 107,185 multi-turn SWE rollouts across 2,788 repositories,
     with verified resolve labels (74,649 resolved · 32,536 unresolved).
@@ -223,14 +228,14 @@ Contributions are welcome. Please open an issue or pull request.
 If you use Orchard or Orchard Env in your research, please cite:
 
 ```bibtex
-@inproceedings{peng2026orchard,
+@misc{peng2026orchard,
   title={Orchard: An Open-Source Agentic Modeling Framework},
   author={Peng, Baolin and Yao, Wenlin and Wu, Qianhui and Cheng, Hao and
           Yu, Xiao and Yang, Rui and Ge, Tao and Sordoni, Alessandro and
           Yuan, Xingdi and Shen, Yelong and He, Pengcheng and Zhang, Tong and
           Yu, Zhou and Gao, Jianfeng},
-  booktitle={Conference on Language Modeling (COLM)},
-  year={2026}
+  year={2026},
+  note={arXiv preprint, link coming soon}
 }
 ```
 
