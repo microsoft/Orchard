@@ -37,25 +37,3 @@ python3 -m http.server 8000
 
 The `.nojekyll` file is included so Pages serves the `assets/` directory verbatim.
 
-## ⚠️ Verify before publishing
-
-Two links are best-guesses extracted from the PDF and are marked with a
-`data-verify` attribute in `index.html` — **confirm or replace them**:
-
-| Link | Current value | Where |
-|------|---------------|-------|
-| Code | `https://github.com/microsoft/Orchard` | hero buttons + footer |
-| Data | `https://huggingface.co/datasets/microsoft/Orchard` | hero buttons + footer |
-
-Find them quickly: `grep -n data-verify index.html`.
-
-The arXiv paper link is verified. Author names, the abstract, and all benchmark
-numbers are transcribed from the published abstract; the BibTeX `author` field
-reflects the paper's author order.
-
-**Author links** point to each author's direct Google Scholar profile
-(`…/citations?user=XXXX`), looked up individually. The common-name matches worth a
-quick sanity-check are **Hao Cheng** (`d9s3sbQAAAAJ`), **Xiao Yu** (`QblBy88AAAAJ`),
-and **Rui Yang** (`QHSUy3MAAAAJ`); disambiguated by affiliation/topic but please
-confirm. They're the `<a>` tags inside the three `<ul class="authors">` lists in
-`index.html`.
