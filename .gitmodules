@@ -1,0 +1,3 @@
+[submodule "trainer/slime"]
+	path = trainer/slime
+	url = https://github.com/MSR-Orchard/slime.git
