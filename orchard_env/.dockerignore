@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.git/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+tests/
+examples/
+docs/
+k8s/
+scripts/
+.azure-config

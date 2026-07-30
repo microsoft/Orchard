@@ -1,0 +1,115 @@
+# Agent injector image — used as an init container to inject the sandbox
+# agent into ANY user-provided container image.
+#
+# How it works:
+#   1. This image bundles a fully self-contained Python interpreter (binary +
+#      stdlib + shared libs) plus the agent code under /opt/sandbox-agent/
+#   2. At pod creation, an init container (this image) copies everything
+#      to a shared emptyDir volume
+#   3. The main container (user's custom image) mounts that volume and
+#      runs the agent using the bundled Python — no Python dependency on the
+#      user's image at all
+#
+# Why not a venv?
+#   `python -m venv` creates symlinks (python -> /usr/local/bin/python) that
+#   break when injected into a different image where that path doesn't exist.
+#   Instead we copy the real interpreter + all required shared libraries.
+#
+# Build:
+#   docker build -f Dockerfile.agent-injector -t <acr>/sandbox-agent-injector:latest .
+#
+FROM python:3.11-slim AS builder
+
+# Install agent dependencies into a flat target directory
+COPY orchard_env/agent/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --target=/opt/sandbox-agent/pylib -r /tmp/requirements.txt
+
+# Copy agent source code
+COPY orchard_env/agent/ /opt/sandbox-agent/
+
+# Bundle the Python interpreter (real binary, not a symlink)
+RUN mkdir -p /opt/sandbox-agent/bin && \
+    cp "$(readlink -f /usr/local/bin/python3)" /opt/sandbox-agent/bin/python3
+
+# Bundle the Python standard library (needed for imports like os, json, asyncio, …)
+RUN mkdir -p /opt/sandbox-agent/lib && \
+    cp -a /usr/local/lib/python3.11 /opt/sandbox-agent/lib/python3.11
+
+# Bundle every shared library the interpreter AND its extension modules depend
+# on, INCLUDING the dynamic linker (ld-linux).  By invoking Python through the
+# bundled linker we become completely independent of the host image's glibc.
+RUN mkdir -p /opt/sandbox-agent/lib && \
+    # Collect ALL .so files — the python binary, lib-dynload extension modules,
+    # and any .so inside our pylib (compiled wheels like uvloop, httptools, etc.)
+    find /opt/sandbox-agent/bin /opt/sandbox-agent/lib/python3.11/lib-dynload \
+         /opt/sandbox-agent/pylib \
+         -name '*.so' -o -name '*.so.*' -o -name 'python3*' -type f 2>/dev/null | sort -u > /tmp/all_binaries.txt && \
+    # For each binary, collect all shared library dependencies
+    cat /tmp/all_binaries.txt | while read bin; do \
+        ldd "$bin" 2>/dev/null || true; \
+    done | grep "=> /" | awk '{print $3}' | sort -u > /tmp/all_libs.txt && \
+    # Also collect the dynamic linker
+    ldd /opt/sandbox-agent/bin/python3 | grep 'ld-linux' | awk '{print $1}' > /tmp/interp.txt && \
+    INTERP="$(cat /tmp/interp.txt)" && \
+    if [ -z "$INTERP" ]; then INTERP="$(ls /lib*/ld-linux-* 2>/dev/null | head -1)"; fi && \
+    real_interp="$(readlink -f "$INTERP")" && \
+    cp "$real_interp" /opt/sandbox-agent/lib/ && \
+    basename_interp="$(basename "$INTERP")" && \
+    basename_real="$(basename "$real_interp")" && \
+    if [ "$basename_interp" != "$basename_real" ]; then \
+        ln -sf "$basename_real" "/opt/sandbox-agent/lib/$basename_interp"; \
+    fi && \
+    # Copy all shared libraries
+    cat /tmp/all_libs.txt | while read lib; do \
+        real="$(readlink -f "$lib")"; \
+        cp -n "$real" /opt/sandbox-agent/lib/ 2>/dev/null || true; \
+        base="$(basename "$lib")"; \
+        realbase="$(basename "$real")"; \
+        if [ "$base" != "$realbase" ]; then \
+            ln -sf "$realbase" "/opt/sandbox-agent/lib/$base" 2>/dev/null || true; \
+        fi; \
+    done && \
+    # Also grab libpython if it exists as a shared library
+    for f in /usr/local/lib/libpython3*.so*; do \
+        [ -e "$f" ] && cp -a "$f" /opt/sandbox-agent/lib/ || true; \
+    done && \
+    echo "Bundled $(wc -l < /tmp/all_libs.txt) shared libraries" && \
+    echo "Bundled dynamic linker: $(ls /opt/sandbox-agent/lib/ld-linux*)"
+
+# Create the startup script
+RUN cat > /opt/sandbox-agent/start.sh << 'SCRIPT'
+#!/bin/sh
+# Start the sandbox agent using the BUNDLED Python interpreter + linker.
+# By invoking Python through our own ld-linux we are completely independent
+# of the host image's glibc version.
+AGENT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export PYTHONHOME="$AGENT_DIR"
+export PYTHONPATH="$AGENT_DIR/pylib${PYTHONPATH:+:$PYTHONPATH}"
+
+# Find the bundled dynamic linker (ld-linux-*.so.*)
+LOADER="$(ls "$AGENT_DIR"/lib/ld-linux-* 2>/dev/null | head -1)"
+if [ -n "$LOADER" ] && [ -x "$LOADER" ]; then
+    exec "$LOADER" --library-path "$AGENT_DIR/lib" "$AGENT_DIR/bin/python3" "$AGENT_DIR/server.py"
+else
+    # Fallback: try running directly (same-glibc case)
+    export LD_LIBRARY_PATH="$AGENT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    exec "$AGENT_DIR/bin/python3" "$AGENT_DIR/server.py"
+fi
+SCRIPT
+RUN chmod +x /opt/sandbox-agent/start.sh
+
+# Quick sanity check — verify the fully-isolated invocation works
+RUN LOADER="$(ls /opt/sandbox-agent/lib/ld-linux-* | head -1)" && \
+    PYTHONHOME=/opt/sandbox-agent \
+    PYTHONPATH=/opt/sandbox-agent/pylib \
+    "$LOADER" --library-path /opt/sandbox-agent/lib \
+    /opt/sandbox-agent/bin/python3 -c "import fastapi, uvicorn, ssl; print('agent-injector sanity check passed (with ssl)')"
+
+# ── Minimal final image (just the files to copy) ──
+FROM busybox:latest
+
+COPY --from=builder /opt/sandbox-agent /opt/sandbox-agent
+
+# The init container's only job: copy the agent to the shared volume.
+# The destination /agent-volume is the mount point of the shared emptyDir.
+CMD ["sh", "-c", "cp -a /opt/sandbox-agent/. /agent-volume/"]

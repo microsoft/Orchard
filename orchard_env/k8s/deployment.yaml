@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-orchestrator
+  namespace: orchestrator
+  labels:
+    app: sandbox-orchestrator
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sandbox-orchestrator
+  template:
+    metadata:
+      labels:
+        app: sandbox-orchestrator
+    spec:
+      serviceAccountName: sandbox-orchestrator
+      containers:
+        - name: orchestrator
+          image: ${ACR_NAME}.azurecr.io/sandbox-orchestrator:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: orchestrator-config
+            - secretRef:
+                name: orchestrator-api-keys
+          resources:
+            requests:
+              cpu: 4000m
+              memory: 16Gi
+            limits:
+              cpu: 4000m
+              memory: 16Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      # Run on system node pool
+      nodeSelector:
+        kubernetes.io/os: linux
+      # Spread across nodes for HA
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: sandbox-orchestrator
+                topologyKey: kubernetes.io/hostname

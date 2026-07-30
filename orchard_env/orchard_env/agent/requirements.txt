@@ -1,0 +1,5 @@
+# Agent dependencies (installed in sandbox container image)
+fastapi>=0.104.0
+uvicorn>=0.24.0
+# Required by FastAPI for WebSocket support (used by /exec/pty)
+websockets>=12.0

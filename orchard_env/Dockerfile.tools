@@ -1,0 +1,223 @@
+# Sandbox tools image — provides agent CLIs to EVERY sandbox.
+#
+#   codex     OpenAI Codex CLI          (npm, static-pie musl binary)
+#   claude    Anthropic Claude Code     (npm, native ELF, GLIBC_2.17)
+#   pi        earendil-works/pi         (GitHub release, native ELF, GLIBC_2.17)
+#   opencode  OpenCode                  (npm, native ELF, GLIBC_2.17)
+#   hermes    Nous Research Hermes      (PyPI + relocatable standalone CPython)
+#
+# Every payload here is self-contained and needs NO install step, NO network
+# access and NO runtime (Node.js / Python) inside the sandbox. Each one was
+# verified to run on glibc 2.17+ — i.e. CentOS 7 and newer — which covers every
+# realistic sandbox image, including all SWE-bench images (Ubuntu 22.04).
+#
+# CLIs whose payload requires GLIBC_2.28 (GitHub Copilot, Cursor Agent, Gemini)
+# are deliberately NOT bundled: supporting them needs a patchelf'd private glibc,
+# which is a materially larger blast radius for little gain here.
+#
+# Everything is relocatable — nothing hardcodes the mount path — so the payload
+# works no matter where the orchestrator mounts it.
+#
+# This image is consumed in two possible ways (both supported by the same
+# layout, see TOOLS_VOLUME_MODE in the orchestrator):
+#   1. "image" mode (default, needs k8s >= 1.33 + containerd >= 2.0):
+#      mounted directly read-only via an `image:` volume source — the kubelet
+#      pulls it once per node, so there is NO per-pod copy.
+#   2. "initcontainer" mode (portable fallback):
+#      run as an init container whose CMD copies the payload into a shared
+#      emptyDir.
+#
+# Build:
+#   docker build -f Dockerfile.tools -t <acr>/sandbox-tools:latest .
+#
+# Pin CLI versions for reproducible sandboxes:
+#   docker build -f Dockerfile.tools \
+#     --build-arg CODEX_VERSION=0.145.0 \
+#     --build-arg CLAUDE_CODE_VERSION=2.1.220 \
+#     --build-arg OPENCODE_VERSION=1.18.7 \
+#     --build-arg PI_VERSION=v0.82.1 \
+#     --build-arg HERMES_VERSION=0.19.0 \
+#     -t <acr>/sandbox-tools:latest .
+#
+
+# ─────────────────────────── npm-delivered CLIs ───────────────────────────
+FROM node:22-bookworm-slim AS npmtools
+
+ARG CODEX_VERSION=latest
+ARG CLAUDE_CODE_VERSION=latest
+ARG OPENCODE_VERSION=latest
+
+# npm is only a *delivery* mechanism here — it is not part of the payload.
+RUN npm install --global --prefix /tmp/npmprefix --omit=dev \
+        "@openai/codex@${CODEX_VERSION}" \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+        "opencode-ai@${OPENCODE_VERSION}"
+
+# Extract just the native binaries, preserving each CLI's internal layout.
+# codex resolves its sidecars (ripgrep, code-mode host, resources) relative to
+# its own executable, so the whole vendor directory must stay intact.
+RUN set -eux; \
+    mkdir -p /payload; \
+    \
+    codex_vendor="$(find /tmp/npmprefix/lib/node_modules/@openai/codex -type d -path '*/vendor/*-linux-musl' | head -1)"; \
+    test -n "$codex_vendor"; \
+    test -x "$codex_vendor/bin/codex"; \
+    cp -a "$codex_vendor" /payload/codex; \
+    \
+    claude_bin="$(readlink -f /tmp/npmprefix/bin/claude)"; \
+    test -x "$claude_bin"; \
+    mkdir -p /payload/claude; \
+    cp -a "$claude_bin" /payload/claude/claude; \
+    \
+    opencode_bin="/tmp/npmprefix/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64/bin/opencode"; \
+    test -x "$opencode_bin"; \
+    mkdir -p /payload/opencode; \
+    cp -a "$opencode_bin" /payload/opencode/opencode
+
+# NOTE on opencode: the glibc build above is used, NOT `opencode-linux-x64-musl`.
+# Despite the name the musl variant is *dynamically* linked against musl plus
+# libstdc++/libgcc_s, so it cannot run on a glibc host even when a musl loader is
+# supplied. The glibc build only needs GLIBC_2.27 and runs everywhere we target.
+
+# ─────────────────────────── pi (GitHub release) ───────────────────────────
+FROM debian:12-slim AS pitools
+
+ARG PI_VERSION=v0.82.1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# The release tarball unpacks to a `pi/` directory holding the binary plus its
+# sidecars (theme/, node_modules/, photon_rs_bg.wasm). Keep that layout intact.
+RUN set -eux; \
+    mkdir -p /payload; \
+    curl -fsSL -o /tmp/pi.tar.gz \
+        "https://github.com/earendil-works/pi/releases/download/${PI_VERSION}/pi-linux-x64.tar.gz"; \
+    tar xzf /tmp/pi.tar.gz -C /payload; \
+    rm /tmp/pi.tar.gz; \
+    test -x /payload/pi/pi; \
+    rm -rf /payload/pi/docs /payload/pi/examples /payload/pi/CHANGELOG.md
+
+# ─────────────────────── hermes (PyPI + standalone Python) ───────────────────
+FROM python:3.11-slim AS hermestools
+
+ARG HERMES_VERSION=0.19.0
+# python-build-standalone produces a fully RELOCATABLE CPython: it derives its
+# prefix from argv[0] at runtime, so nothing bakes in an absolute path.
+ARG PYTHON_STANDALONE_URL=https://github.com/astral-sh/python-build-standalone/releases/download/20260718/cpython-3.11.15%2B20260718-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir uv
+
+# Install hermes directly INTO the standalone interpreter rather than into a
+# venv: a venv pins absolute paths (pyvenv.cfg `home`, bin/python symlinks) and
+# would stop being relocatable, whereas this layout can be mounted anywhere.
+RUN set -eux; \
+    mkdir -p /payload/hermes; \
+    curl -fsSL -o /tmp/python.tar.gz "${PYTHON_STANDALONE_URL}"; \
+    tar xzf /tmp/python.tar.gz -C /payload/hermes; \
+    rm /tmp/python.tar.gz; \
+    test -x /payload/hermes/python/bin/python3; \
+    uv pip install --no-cache \
+        --python /payload/hermes/python/bin/python3 \
+        "hermes-agent==${HERMES_VERSION}"; \
+    test -f /payload/hermes/python/bin/hermes; \
+    find /payload/hermes -name '__pycache__' -type d -prune -exec rm -rf {} + || true
+
+# ───────────────────────── assembly + wrappers + checks ─────────────────────
+FROM debian:12-slim AS assembly
+
+COPY --from=npmtools    /payload/codex    /opt/sandbox-tools/codex
+COPY --from=npmtools    /payload/claude   /opt/sandbox-tools/claude
+COPY --from=npmtools    /payload/opencode /opt/sandbox-tools/opencode
+COPY --from=pitools     /payload/pi       /opt/sandbox-tools/pi
+COPY --from=hermestools /payload/hermes   /opt/sandbox-tools/hermes
+
+# ── Launcher wrappers ──
+# Kept as tiny POSIX-sh scripts (every sandbox image has /bin/sh) so that:
+#   * the payload directory can be relocated / mounted anywhere
+#   * agent-specific env vars (PYTHONHOME etc.) never leak into the CLIs
+#   * each CLI gets a writable HOME-based config dir even when the payload
+#     itself is mounted read-only
+RUN set -eux; \
+    mkdir -p /opt/sandbox-tools/bin; \
+    for tool in codex claude pi opencode hermes; do \
+        case "$tool" in \
+            codex)    target='"$TOOLS_DIR/codex/bin/codex"' ;; \
+            claude)   target='"$TOOLS_DIR/claude/claude"' ;; \
+            pi)       target='"$TOOLS_DIR/pi/pi"' ;; \
+            opencode) target='"$TOOLS_DIR/opencode/opencode"' ;; \
+            hermes)   target='"$TOOLS_DIR/hermes/python/bin/python3" "$TOOLS_DIR/hermes/python/bin/hermes"' ;; \
+        esac; \
+        { \
+            echo '#!/bin/sh'; \
+            echo '# Injected by the sandbox tools image.'; \
+            echo '# Resolve symlinks so the wrapper still finds its payload when'; \
+            echo '# invoked through a link such as /usr/local/bin/codex.'; \
+            echo 'SELF="$0"'; \
+            echo 'while [ -L "$SELF" ]; do'; \
+            echo '    _link="$(readlink "$SELF" 2>/dev/null)" || break'; \
+            echo '    [ -n "$_link" ] || break'; \
+            echo '    case "$_link" in'; \
+            echo '        /*) SELF="$_link" ;;'; \
+            echo '        *)  SELF="$(dirname "$SELF")/$_link" ;;'; \
+            echo '    esac'; \
+            echo 'done'; \
+            echo 'TOOLS_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"'; \
+            echo '# The in-pod agent runs under a bundled Python; never leak it into the CLI.'; \
+            echo 'unset PYTHONHOME PYTHONPATH LD_LIBRARY_PATH'; \
+            echo "exec $target \"\$@\""; \
+        } > "/opt/sandbox-tools/bin/$tool"; \
+        chmod 0755 "/opt/sandbox-tools/bin/$tool"; \
+        sh -n "/opt/sandbox-tools/bin/$tool"; \
+    done
+
+# Record the versions that were baked in, for debugging inside sandboxes.
+RUN set -eux; \
+    { \
+        echo "codex    $(/opt/sandbox-tools/bin/codex --version 2>&1 | head -1)"; \
+        echo "claude   $(/opt/sandbox-tools/bin/claude --version 2>&1 | head -1)"; \
+        echo "pi       $(/opt/sandbox-tools/bin/pi --version 2>&1 | head -1)"; \
+        echo "opencode $(/opt/sandbox-tools/bin/opencode --version 2>&1 | head -1)"; \
+        echo "hermes   $(/opt/sandbox-tools/bin/hermes --version 2>&1 | head -1)"; \
+    } > /opt/sandbox-tools/VERSIONS; \
+    cat /opt/sandbox-tools/VERSIONS
+
+# PATH snippet for login shells. `bash --login` re-reads /etc/profile, which
+# would otherwise discard the PATH exported by the container command.
+# NOTE: the tools dir is APPENDED, never prepended, so a toolchain already
+# present in the user's image always wins.
+RUN { \
+        echo '# Injected by the sandbox tools image.'; \
+        echo 'case ":$PATH:" in'; \
+        echo '    *:/opt/sandbox-tools/bin:*) ;;'; \
+        echo '    *) PATH="$PATH:/opt/sandbox-tools/bin"; export PATH ;;'; \
+        echo 'esac'; \
+    } > /opt/sandbox-tools/profile.sh && \
+    chmod 0644 /opt/sandbox-tools/profile.sh && \
+    sh -n /opt/sandbox-tools/profile.sh
+
+# ── Sanity check: every wrapper must work from a relocated path AND through a
+#    symlink (how they are exposed in /usr/local/bin inside sandboxes) ──
+RUN set -eux; \
+    cp -a /opt/sandbox-tools /tmp/relocated; \
+    mkdir -p /tmp/linkdir; \
+    for tool in codex claude pi opencode hermes; do \
+        "/tmp/relocated/bin/$tool" --version; \
+        ln -s "/tmp/relocated/bin/$tool" "/tmp/linkdir/$tool"; \
+        "/tmp/linkdir/$tool" --version; \
+    done; \
+    rm -rf /tmp/relocated /tmp/linkdir; \
+    du -sh /opt/sandbox-tools
+
+# ─────────────────────────── Final image: payload only ──────────────────────
+# busybox provides the `cp` used by "initcontainer" mode; "image" volume mode
+# ignores the CMD and mounts the filesystem directly.
+FROM busybox:latest
+
+COPY --from=assembly /opt/sandbox-tools /opt/sandbox-tools
+
+CMD ["sh", "-c", "cp -a /opt/sandbox-tools/. /tools-volume/"]

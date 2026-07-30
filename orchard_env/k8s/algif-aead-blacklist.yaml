@@ -1,0 +1,128 @@
+---
+# Workaround for vulnerable Linux kernel 6.8.0-1054-azure (algif_aead CVE).
+#
+# Apply ONLY when:
+#   - The fixed AKS node image has not yet been published in this region,
+#     i.e. `az aks nodepool get-upgrades --query latestNodeImageVersion`
+#     still points at an image whose kernel is 6.8.0-1052/1054-azure.
+#
+# What it does on every node (sys + sbx + any future autoscaled node):
+#   1. Writes /etc/modprobe.d/disable-algif.conf so the kernel will refuse
+#      to load algif_aead on subsequent boots.
+#   2. Tries to rmmod algif_aead immediately if it is currently loaded.
+#   3. Stays running (sleeps) so the DaemonSet does not enter CrashLoopBackOff;
+#      the readiness file shows that this node has been processed.
+#
+# Remove this DaemonSet AFTER:
+#   - Microsoft publishes an AKS node image with a fixed kernel, AND
+#   - You roll the nodepools onto that image with `nodepool upgrade`, AND
+#   - `kubectl get nodes -o jsonpath=...kernelVersion` confirms no node is
+#     still on 6.8.0-1052/1054-azure.
+#
+# How to apply:
+#   kubectl apply -f k8s/algif-aead-blacklist.yaml
+#
+# How to verify:
+#   kubectl -n kube-system rollout status ds/algif-aead-blacklist
+#   kubectl -n kube-system logs ds/algif-aead-blacklist --tail=50
+#
+# How to remove (after vendor image fix is rolled):
+#   kubectl delete -f k8s/algif-aead-blacklist.yaml
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: algif-aead-blacklist
+  namespace: kube-system
+  labels:
+    app: algif-aead-blacklist
+    purpose: kernel-cve-workaround
+spec:
+  selector:
+    matchLabels:
+      app: algif-aead-blacklist
+  template:
+    metadata:
+      labels:
+        app: algif-aead-blacklist
+        purpose: kernel-cve-workaround
+    spec:
+      hostPID: true
+      hostNetwork: true
+      # Run on every Linux node, including the tainted sandbox pool and any
+      # future custom-tainted pools.
+      tolerations:
+        - operator: Exists
+      nodeSelector:
+        kubernetes.io/os: linux
+      # Use a known-good ACR image if you have one mirrored; busybox is fine
+      # because we only need sh + tee + rmmod-via-nsenter (we use nsenter on host).
+      containers:
+        - name: blacklist
+          image: mcr.microsoft.com/cbl-mariner/busybox:2.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "[$(date -u)] node=$NODE_NAME starting algif_aead blacklist"
+
+              # Write the modprobe blacklist on the host root filesystem.
+              cat > /host/etc/modprobe.d/disable-algif.conf <<EOF
+              # Added by algif-aead-blacklist DaemonSet (kernel CVE workaround).
+              # Remove this file once nodes are running a fixed kernel image.
+              install algif_aead /bin/false
+              blacklist algif_aead
+              EOF
+              echo "[$(date -u)] wrote /etc/modprobe.d/disable-algif.conf"
+
+              # Try to unload the module right now if it is loaded.
+              # nsenter into the host's mount + pid namespaces so rmmod
+              # operates on the host kernel, not the container.
+              if nsenter --target 1 --mount --uts --ipc --net --pid -- \
+                  sh -c 'lsmod | grep -q "^algif_aead"'; then
+                echo "[$(date -u)] algif_aead currently loaded; attempting rmmod"
+                if nsenter --target 1 --mount --uts --ipc --net --pid -- \
+                    rmmod algif_aead 2>&1; then
+                  echo "[$(date -u)] rmmod algif_aead succeeded"
+                else
+                  echo "[$(date -u)] rmmod algif_aead failed (likely in use); blacklist will take effect on next reboot"
+                fi
+              else
+                echo "[$(date -u)] algif_aead not currently loaded; blacklist persisted for future boots"
+              fi
+
+              # Mark this node as processed and keep the pod alive (so the
+              # DaemonSet stays Ready and AKS does not restart us repeatedly).
+              touch /tmp/done
+              echo "[$(date -u)] node=$NODE_NAME complete; sleeping"
+              while true; do sleep 3600; done
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/done"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+      terminationGracePeriodSeconds: 5
