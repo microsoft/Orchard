@@ -4,11 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Orchard: An Open-Source Agentic Modeling Framework</title>
-  <meta name="description" content="Orchard is an open-source framework for scalable agentic modeling, built on Orchard Env — a lightweight, harness-agnostic environment service for sandbox lifecycle management across coding, GUI, and personal-assistant agents." />
+  <meta name="description" content="Orchard is an open-source framework for scalable agentic modeling, built on Orchard Env — a thin, Kubernetes-native, harness-agnostic environment service for sandbox lifecycle management across coding, GUI, and personal-assistant agents." />
 
   <!-- Social / Open Graph -->
   <meta property="og:title" content="Orchard: An Open-Source Agentic Modeling Framework" />
-  <meta property="og:description" content="A lightweight, open, harness-agnostic environment layer enabling reusable agentic data, training recipes, and evaluations across domains." />
+  <meta property="og:description" content="A thin, open, harness-agnostic environment layer enabling reusable agentic data, training recipes, and evaluations across domains and harnesses." />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="assets/img/orchard-overview.png" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -73,13 +73,13 @@
     <div class="container">
       <figure class="overview-figure perf-figure">
         <img src="assets/img/orchard-performance.png"
-             alt="Performance comparison scatter plots. Left: Orchard-SWE (30B) reaches 67.5% on SWE-bench Verified, approaching frontier mixture-of-experts systems 10–30× larger. Right: Orchard-GUI (4B) reaches 68.4% average success across WebVoyager, Online-Mind2Web, and DeepShop." />
+             alt="Performance comparison scatter plots. Left: Orchard-SWE (35B-A3B) reaches 73.0% on SWE-bench Verified with value-model reranking (69.7% with RPR-based RL), approaching frontier mixture-of-experts systems 10–30× larger. Right: Orchard-GUI (4B) reaches 68.4% average success across WebVoyager, Online-Mind2Web, and DeepShop." />
         <figcaption>
-          <strong>Performance comparison.</strong> <em>Left:</em> Orchard-SWE (30B) reaches 67.5% on
-          SWE-bench Verified, approaching frontier MoE systems 10–30× larger. <em>Right:</em>
-          Orchard-GUI (4B) achieves 68.4% average success across WebVoyager, Online-Mind2Web, and
-          DeepShop, making it the strongest open-source GUI agent while staying on par with
-          proprietary systems from OpenAI and Google.
+          <strong>Performance comparison.</strong> <em>Left:</em> Orchard-SWE (35B-A3B) reaches 73.0% on
+          SWE-bench Verified with value-model reranking (69.7% with RPR-based RL), approaching frontier
+          MoE systems 10–30× larger. <em>Right:</em> Orchard-GUI (4B) achieves 68.4% average success
+          across WebVoyager, Online-Mind2Web, and DeepShop, making it the strongest open-source GUI
+          agent while staying on par with proprietary systems from OpenAI and Google.
         </figcaption>
       </figure>
     </div>
@@ -90,28 +90,32 @@
     <div class="container narrow">
       <h2 class="section-title">Abstract</h2>
       <p class="abstract">
-        Agentic modeling aims to transform LLMs into autonomous agents capable of solving complex
-        tasks through planning, reasoning, tool use, and multi-turn interaction with environments.
-        Despite major investment, open research remains constrained by infrastructure and training
-        gaps. Many high-performing systems rely on proprietary codebases, models, or services, while
-        most open-source frameworks focus on orchestration and evaluation rather than scalable agent
-        training. We present <strong>Orchard</strong>, an open-source framework for scalable agentic
-        modeling. At its core is <strong>Orchard Env</strong>, a lightweight environment service
-        providing reusable primitives for sandbox lifecycle management across task domains, agent
-        harnesses, and pipeline stages. On top of Orchard Env, we build three agentic modeling
-        recipes. <strong>Orchard-SWE</strong> targets coding agents: we distill 107K trajectories from
-        MiniMax-M2.5 and Qwen3.5-397B, introduce credit-assignment SFT to learn from productive
-        segments of unresolved trajectories, and apply Balanced Adaptive Rollout for RL. Starting from
-        Qwen3-30B-A3B-Thinking, Orchard-SWE achieves 64.3% on SWE-bench Verified after SFT and 67.5%
-        after SFT+RL, setting a new state of the art among open-source models of comparable size.
+        Agentic modeling aims to transform large language models (LLMs) into autonomous agents that
+        can solve complex tasks through planning, reasoning, tool use, and multi-turn interaction with
+        external environments. We present <strong>Orchard</strong>, an open-source framework for
+        scalable agentic modeling. At its core is <strong>Orchard Env</strong>, a thin,
+        Kubernetes-native environment service that provides reusable primitives for sandbox lifecycle
+        management, designed to operate across task domains, agent harnesses, and different training
+        stages. On top of Orchard Env, we build three agentic modeling recipes.
+        <strong>Orchard-SWE</strong> targets software-engineering agents: we introduce
+        credit-assignment SFT to learn from productive segments of unresolved trajectories, and for RL
+        go beyond sparse outcome rewards with a progression of signals — Balanced Adaptive Rollout
+        (BAR) for sample-efficient sparse-reward optimization, plus two denser rewards, on-policy
+        distillation (OPD) and rubric-based process reward (RPR). We further introduce historical
+        experience distillation, which compresses rollouts from past experiments into a small value
+        model that reranks candidates at inference time. On the Qwen3.5-35B-A3B backbone it reaches
+        69.7% with RPR-based RL and 73.0% with best-of-N value-model reranking, setting a new state of
+        the art among open-source methods while approaching frontier systems more than 10× larger.
         <strong>Orchard-GUI</strong> trains a 4B vision-language computer-use agent using only 0.4K
         distilled trajectories and 2.2K open-ended tasks, achieving 74.1%, 67.0%, and 64.0% success
-        rates on WebVoyager, Online-Mind2Web, and DeepShop, respectively — the strongest open-source
-        model while remaining competitive with proprietary systems. <strong>Orchard-Claw</strong>
-        targets personal assistant agents: trained with only 0.2K synthetic tasks, it achieves 59.6%
-        pass@3 on Claw-Eval and 73.9% when paired with a stronger ZeroClaw harness. Collectively, these
-        results show that a lightweight, open, harness-agnostic environment layer enables reusable
-        agentic data, training recipes, and evaluations across domains.
+        rates on WebVoyager, Online-Mind2Web, and DeepShop, respectively (68.4% average) — the
+        strongest open-source model while remaining competitive with proprietary systems from OpenAI
+        and Google Gemini. <strong>Orchard-Claw</strong> targets personal assistant agents for
+        productivity workflows such as email, calendar, and daily tool use: trained with only 0.2K
+        synthetic tasks, it achieves 59.6% pass@3 on Claw-Eval and 73.9% when paired with a stronger
+        ZeroClaw harness. Collectively, these results show that a thin, open, harness-agnostic
+        environment layer enables the reuse of agentic data, training recipes, and evaluation
+        protocols across domains and harnesses.
       </p>
     </div>
   </section>
@@ -131,14 +135,16 @@
             <div class="arch-emoji">⌨️</div>
             <h3>Orchard-SWE</h3>
             <p>Coding agents on real repositories</p>
-            <span class="arch-tag">SWE-bench Verified</span>
+            <span class="arch-tag">SWE-bench Verified</span></br>
+            <span class="arch-tag">SWE-bench Multilingual</span>
           </div>
           <div class="arch-card recipe gui">
             <div class="arch-emoji">🖥️</div>
             <h3>Orchard-GUI</h3>
             <p>VLM-based computer-use agents</p>
-            <span class="arch-tag">WebVoyager · Online-Mind2Web</span>
-            <span class="arch-tag">DeepShop</span>
+            <span class="arch-tag">WebVoyager</span>
+            <span class="arch-tag">DeepShop</span></br>
+            <span class="arch-tag">Online-Mind2Web</span>
           </div>
           <div class="arch-card recipe claw">
             <div class="arch-emoji">🤖</div>
@@ -157,7 +163,7 @@
             <div class="env-head">
               <div class="arch-emoji">🌳</div>
               <h3>Orchard Env</h3>
-              <p class="env-tagline">A lightweight environment service — reusable primitives for sandbox lifecycle management</p>
+              <p class="env-tagline">A thin, Kubernetes-native environment service — reusable primitives for sandbox lifecycle management</p>
             </div>
             <div class="env-prims">
               <span>create / destroy</span>
@@ -165,7 +171,8 @@
               <span>apply&nbsp;patch</span>
               <span>file I/O</span>
               <span>screenshot &amp; action</span>
-              <span>network isolation</span>
+              <span>network policy</span>
+              <!--span>REST API</span-->
               <span>TTL cleanup</span>
             </div>
           </div>
@@ -206,17 +213,18 @@
             <h3>Coding agents</h3>
           </header>
           <p>
-            Starting from <code>Qwen3-30B-A3B-Thinking</code>, Orchard-SWE distills <strong>107K
-            trajectories</strong> from MiniMax-M2.5 and Qwen3.5-397B, then adds two training ideas:
-            <em>credit-assignment SFT</em> to salvage the productive segments of unresolved
-            trajectories, and <em>Balanced Adaptive Rollout</em> for RL.
+            Orchard-SWE curates <strong>107K trajectories</strong> distilled from MiniMax-M2.5 and
+            Qwen3.5-397B, then adds <em>credit-assignment SFT</em> to salvage productive segments of
+            unresolved trajectories and a progression of denser RL signals — <em>Balanced Adaptive
+            Rollout (BAR)</em>, <em>on-policy distillation (OPD)</em>, and <em>rubric-based process
+            reward (RPR)</em> — plus best-of-N reranking with a small value model.
           </p>
           <ul class="kv">
-            <li><span>After SFT</span><strong>64.3%</strong></li>
-            <li><span>After SFT + RL</span><strong>67.5%</strong></li>
-            <li><span>Benchmark</span><strong>SWE-bench Verified</strong></li>
+            <li><span>SFT + RL <em>(RPR)</em></span><strong>69.7%</strong></li>
+            <li><span>+ value model</span><strong>73.0%</strong></li>
+            <li><span>Backbone</span><strong>Qwen3.5-35B-A3B</strong></li>
           </ul>
-          <p class="note">New state of the art among open-source models of comparable size.</p>
+          <p class="note">New state of the art on SWE-bench Verified among open-source models of comparable size.</p>
         </article>
 
         <!-- GUI -->
@@ -236,7 +244,7 @@
             <li><span>Online-Mind2Web</span><strong>67.0%</strong></li>
             <li><span>DeepShop</span><strong>64.0%</strong></li>
           </ul>
-          <p class="note">Tiny data footprint, served by a Playwright browser backend.</p>
+          <p class="note">Outperforms prior open-source agents and even its 235B teacher model, on a tiny data footprint.</p>
         </article>
 
         <!-- Claw -->
@@ -282,20 +290,43 @@
           <div>
             <h3>Credit-assignment SFT</h3>
             <p>
-              Instead of discarding failed rollouts, Orchard learns from the <em>productive segments</em>
-              of unresolved trajectories — extracting useful supervision from partial progress that
-              standard outcome-filtered SFT throws away.
+              Instead of discarding failed rollouts, Orchard uses retrospective value estimation to
+              extract the <em>productive segments</em> of unresolved trajectories — converting partial
+              progress that standard outcome-filtered SFT throws away into supervision.
             </p>
           </div>
         </div>
         <div class="method">
           <div class="method-num">03</div>
           <div>
-            <h3>Balanced Adaptive Rollout (RL)</h3>
+            <h3>Balanced Adaptive Rollout (BAR)</h3>
             <p>
-              An RL rollout strategy that balances exploration coverage across tasks of varying
-              difficulty, lifting Orchard-SWE from 64.3% to 67.5% on SWE-bench Verified after the
-              SFT stage.
+              A sample-efficient RL rollout strategy for sparse rewards: it adaptively assembles
+              reward-balanced trajectory groups so exploration is spent where the outcome signal is
+              most informative across tasks of varying difficulty.
+            </p>
+          </div>
+        </div>
+        <div class="method">
+          <div class="method-num">04</div>
+          <div>
+            <h3>Denser RL rewards: OPD &amp; RPR</h3>
+            <p>
+              Two dense signals go beyond sparse outcome rewards — <em>on-policy distillation (OPD)</em>
+              supplies a token-level teacher signal at lower rollout cost, and <em>rubric-based process
+              reward (RPR)</em> scores verification quality along the whole trajectory, reaching 69.7%
+              on SWE-bench Verified.
+            </p>
+          </div>
+        </div>
+        <div class="method">
+          <div class="method-num">05</div>
+          <div>
+            <h3>Historical experience distillation</h3>
+            <p>
+              Rollouts accumulated across past RL runs are compressed into a small value model that
+              reranks candidates at inference time (best-of-N), lifting Orchard-SWE to 73.0% on
+              SWE-bench Verified.
             </p>
           </div>
         </div>
@@ -335,8 +366,8 @@
           <p>Calico NetworkPolicy blocks egress by default; each sandbox runs in its own namespace with resource requests equal to limits.</p>
         </div>
         <div class="env-feature">
-          <h4>Scales out</h4>
-          <p>A FastAPI orchestrator with Redis-backed shared state and distributed locks runs many replicas over autoscaling node pools.</p>
+          <h4>Scales out, cheaply</h4>
+          <p>Runtime agent injection and direct Pod-IP routing hit 0.28&nbsp;s average exec latency and sustain a 1,000-sandbox stress test at 100% success — at ~2× lower cost than E2B and Daytona (10× with spot).</p>
         </div>
       </div>
 
@@ -373,11 +404,17 @@
           </thead>
           <tbody>
             <tr>
-              <td rowspan="2"><span class="recipe-chip swe">SWE</span></td>
+              <td rowspan="5"><span class="recipe-chip swe">SWE</span></td>
               <td rowspan="2">Qwen3-30B-A3B-Thinking</td>
               <td>SWE-bench Verified <em>(SFT)</em></td><td class="num">64.3%</td>
             </tr>
             <tr><td>SWE-bench Verified <em>(SFT+RL)</em></td><td class="num">67.5%</td></tr>
+            <tr>
+              <td rowspan="3">Qwen3.5-35B-A3B</td>
+              <td>SWE-bench Verified <em>(RPR-RL)</em></td><td class="num">69.7%</td>
+            </tr>
+            <tr><td>SWE-bench Verified <em>(+ value model)</em></td><td class="num">73.0%</td></tr>
+            <tr><td>SWE-bench Multilingual <em>(RPR-RL)</em></td><td class="num">62.3%</td></tr>
             <tr>
               <td rowspan="3"><span class="recipe-chip gui">GUI</span></td>
               <td rowspan="3">Qwen3-VL-4B-Thinking</td>
