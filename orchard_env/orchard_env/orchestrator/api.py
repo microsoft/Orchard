@@ -14,7 +14,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,19 @@ from orchard_env.orchestrator.k8s_client import K8sClient
 from orchard_env.orchestrator.pod_watcher import PodWatcher
 from orchard_env.orchestrator.redis_job_store import RedisJobStore
 from orchard_env.orchestrator.sandbox_manager import SandboxManager
+from orchard_env.orchestrator.service_proxy import (
+    ServicePortError,
+    ServiceProxyClient,
+    build_service_url,
+    filter_request_headers,
+    filter_response_headers,
+    validate_port,
+)
+from orchard_env.orchestrator.service_tokens import (
+    ServiceTokenError,
+    mint_token,
+    verify_token,
+)
 from orchard_env.orchestrator.settings import settings
 from orchard_env.orchestrator.utils import (
     generate_request_id,
@@ -69,6 +82,7 @@ job_store: JobStore
 exec_manager: ExecManager
 pod_watcher: PodWatcher
 agent_client: AgentClient
+service_proxy_client: ServiceProxyClient
 cleanup_task: asyncio.Task | None = None
 
 
@@ -94,7 +108,7 @@ async def cleanup_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global k8s_client, sandbox_manager, job_store, exec_manager, pod_watcher, agent_client, cleanup_task
+    global k8s_client, sandbox_manager, job_store, exec_manager, pod_watcher, agent_client, service_proxy_client, cleanup_task
 
     # Setup logging
     setup_logging()
@@ -133,6 +147,13 @@ async def lifespan(app: FastAPI):
     # Agent client for direct pod communication (exec / file ops)
     agent_client = AgentClient()
 
+    # Proxy client for user services running inside sandboxes. Constructed
+    # unconditionally (it is inert until a request arrives) so the routes do
+    # not have to guard against a missing client.
+    service_proxy_client = ServiceProxyClient()
+    if settings.enable_service_endpoints:
+        logger.info("Sandbox service endpoints are enabled")
+
     # Start pod watcher (Watch/Informer pattern)
     pod_watcher = PodWatcher()
     await pod_watcher.start()
@@ -148,6 +169,9 @@ async def lifespan(app: FastAPI):
     # Cleanup
     if agent_client:
         await agent_client.close()
+
+    if service_proxy_client:
+        await service_proxy_client.close()
 
     if pod_watcher:
         await pod_watcher.stop()
@@ -927,5 +951,377 @@ async def exec_pty_ws(ws: WebSocket, sandbox_id: str) -> None:
         t.cancel()
     try:
         await agent_ws.close()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Sandbox service endpoints (HTTP + WebSocket proxy to a user service)
+# ---------------------------------------------------------------------------
+#
+# Exec and file I/O cover agents that *run commands*. A growing class of
+# workloads instead speaks a protocol to a long-running server inside the
+# sandbox: an OpenEnv environment server, an MCP server, a dev server, an
+# evaluation endpoint. Those need a reachable URL, not a shell.
+#
+# An operator opens a port explicitly:
+#
+#     POST /sandboxes/{id}/services      {"port": 8000}
+#       -> {"url": "https://host/s/<token>", "expires_at": ...}
+#
+# and traffic then flows through that URL:
+#
+#     ANY /s/{token}/{path}      HTTP, including streaming responses
+#     WS  /s/{token}/{path}      WebSocket, frames forwarded verbatim
+#
+# The token rides in the path so that a client which appends its own suffix —
+# an OpenEnv EnvClient appending ``/ws`` — produces a working URL with no
+# special-casing, and so the credential never lands in a query string that
+# proxies habitually log.
+#
+# Kubernetes note: the pod spec is unchanged. ``containerPort`` is
+# informational, so any process listening on 0.0.0.0 inside the pod is already
+# reachable at the pod IP. The gap this closes is reachability from *outside*
+# the cluster, not inside it.
+
+
+class CreateServiceRequest(BaseModel):
+    """Request to expose a service port running inside a sandbox."""
+
+    port: int = Field(..., description="Port the service listens on inside the sandbox")
+    ttl_seconds: int | None = Field(
+        default=None,
+        description="Lifetime of the returned URL. Defaults to SERVICE_TOKEN_TTL_SECONDS.",
+    )
+    wait_ready: bool = Field(
+        default=False,
+        description=(
+            "Block until the service answers health_path. Orchard's own "
+            "readiness only covers the in-pod agent, so a sandbox can be ready "
+            "while the service inside it is still starting."
+        ),
+    )
+    health_path: str = Field(
+        default="/health", description="Path polled when wait_ready is true"
+    )
+    ready_timeout: int = Field(
+        default=60,
+        description="Seconds to wait for the service when wait_ready is true",
+    )
+
+
+class ServiceResponse(BaseModel):
+    """An exposed service endpoint."""
+
+    sandbox_id: str
+    port: int
+    url: str
+    expires_at: float
+
+
+class ServiceListResponse(BaseModel):
+    """Ports currently exposed for a sandbox."""
+
+    sandbox_id: str
+    ports: list[int]
+
+
+def _require_service_endpoints_enabled() -> None:
+    if not settings.enable_service_endpoints:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Sandbox service endpoints are disabled. Set "
+                "ENABLE_SERVICE_ENDPOINTS=true on the orchestrator to enable them."
+            ),
+        )
+
+
+def _external_base_url(request: Request) -> str:
+    """External base URL used to build service URLs.
+
+    The capability token travels in this URL, so where the URL points matters:
+    a forged ``X-Forwarded-Host`` would hand the caller a link to an attacker's
+    domain and the token with it. Precedence is therefore:
+
+    1. ``SERVICE_PUBLIC_BASE_URL`` — explicit and always safe. Set this.
+    2. ``X-Forwarded-Proto``/``X-Forwarded-Host``, but only when
+       ``SERVICE_TRUST_FORWARDED_HEADERS`` is on, i.e. an operator has
+       confirmed a proxy overwrites them on every request.
+    3. The request's own scheme and host.
+    """
+    configured = settings.service_public_base_url
+    if configured:
+        return configured.rstrip("/")
+
+    scheme = request.url.scheme
+    host = request.headers.get("host") or request.url.netloc
+
+    if settings.service_trust_forwarded_headers:
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        forwarded_host = request.headers.get("x-forwarded-host")
+        if forwarded_proto:
+            scheme = forwarded_proto.split(",")[0].strip()
+        if forwarded_host:
+            host = forwarded_host.split(",")[0].strip()
+
+    return f"{scheme}://{host}"
+
+
+@app.post("/sandboxes/{sandbox_id}/services", response_model=ServiceResponse)
+async def create_service(
+    sandbox_id: str,
+    request: Request,
+    body: CreateServiceRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """Expose a port inside a sandbox and return a self-authenticating URL."""
+    _require_service_endpoints_enabled()
+
+    try:
+        port = validate_port(body.port)
+    except ServicePortError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    sandbox = await sandbox_manager.get_sandbox(sandbox_id)
+    if not sandbox:
+        raise HTTPException(status_code=404, detail=f"Sandbox {sandbox_id} not found")
+
+    try:
+        exposed = await sandbox_manager.expose_service(sandbox_id, port)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if exposed is None:
+        raise HTTPException(status_code=404, detail=f"Sandbox {sandbox_id} not found")
+
+    if body.wait_ready:
+        pod_ip = await sandbox_manager.get_pod_ip(sandbox_id)
+        if not pod_ip:
+            raise HTTPException(
+                status_code=503, detail=f"Pod IP not available for sandbox {sandbox_id}"
+            )
+        deadline = asyncio.get_running_loop().time() + body.ready_timeout
+        while True:
+            if await service_proxy_client.probe(pod_ip, port, body.health_path):
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                raise HTTPException(
+                    status_code=408,
+                    detail=(
+                        f"Service on port {port} did not answer {body.health_path} "
+                        f"within {body.ready_timeout}s"
+                    ),
+                )
+            await asyncio.sleep(1)
+
+    token, expires_at = mint_token(sandbox_id, port, body.ttl_seconds)
+    # The token is a bearer credential: return it, never log it.
+    logger.info(f"Issued service endpoint for sandbox {sandbox_id} port {port}")
+    return ServiceResponse(
+        sandbox_id=sandbox_id,
+        port=port,
+        url=build_service_url(_external_base_url(request), token),
+        expires_at=expires_at,
+    )
+
+
+@app.get("/sandboxes/{sandbox_id}/services", response_model=ServiceListResponse)
+async def list_services(sandbox_id: str, api_key: str = Depends(verify_api_key)):
+    """List the ports a sandbox currently exposes."""
+    _require_service_endpoints_enabled()
+
+    sandbox = await sandbox_manager.get_sandbox(sandbox_id)
+    if not sandbox:
+        raise HTTPException(status_code=404, detail=f"Sandbox {sandbox_id} not found")
+
+    return ServiceListResponse(
+        sandbox_id=sandbox_id, ports=list(sandbox.exposed_ports or [])
+    )
+
+
+@app.delete("/sandboxes/{sandbox_id}/services/{port}")
+async def delete_service(
+    sandbox_id: str, port: int, api_key: str = Depends(verify_api_key)
+):
+    """Revoke a previously exposed port.
+
+    Takes effect immediately, including for tokens that have not yet expired.
+    """
+    _require_service_endpoints_enabled()
+
+    revoked = await sandbox_manager.revoke_service(sandbox_id, port)
+    if not revoked:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Port {port} is not exposed for sandbox {sandbox_id}",
+        )
+    return {"status": "revoked", "sandbox_id": sandbox_id, "port": port}
+
+
+async def _resolve_service_target(token: str) -> tuple[str, int, str]:
+    """Validate a capability token and resolve it to a live pod.
+
+    Returns ``(sandbox_id, port, pod_ip)``.
+
+    Every hop is re-checked on every request: the signature, the expiry, the
+    sandbox's continued existence, and the port's continued presence in the
+    allowlist. That last check is what makes revocation immediate.
+    """
+    try:
+        sandbox_id, port = verify_token(token)
+    except ServiceTokenError as e:
+        # Deliberately terse: do not tell a prober which part failed.
+        raise HTTPException(status_code=403, detail=str(e))
+
+    sandbox = await sandbox_manager.get_sandbox(sandbox_id)
+    if not sandbox:
+        raise HTTPException(status_code=404, detail="Sandbox not found")
+
+    if port not in (sandbox.exposed_ports or []):
+        raise HTTPException(status_code=403, detail="Port is not exposed")
+
+    pod_ip = await sandbox_manager.get_pod_ip(sandbox_id)
+    if not pod_ip:
+        raise HTTPException(status_code=503, detail="Pod IP not available")
+
+    if settings.service_traffic_refreshes_heartbeat:
+        # An actively used service should not be reaped by heartbeat cleanup
+        # just because the client drives it over the proxy instead of calling
+        # POST /heartbeat itself.
+        await sandbox_manager.heartbeat(sandbox_id)
+
+    return sandbox_id, port, pod_ip
+
+
+@app.api_route(
+    "/s/{token}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+)
+async def proxy_service_http(token: str, path: str, request: Request):
+    """Proxy an HTTP request to a service inside a sandbox.
+
+    The URL is the credential, so no ``X-API-Key`` header is required — which
+    is the whole point: clients that cannot set headers can still connect.
+    """
+    _require_service_endpoints_enabled()
+    _sandbox_id, port, pod_ip = await _resolve_service_target(token)
+
+    body = await request.body()
+    try:
+        upstream = await service_proxy_client.request(
+            method=request.method,
+            pod_ip=pod_ip,
+            port=port,
+            path=path,
+            query_string=request.url.query,
+            headers=filter_request_headers(dict(request.headers)),
+            body=body or None,
+        )
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Service request timed out")
+    except aiohttp.ClientError as e:
+        # The exception text carries the pod IP, which the caller has no
+        # business seeing: keep it in the log, not the response.
+        logger.warning(f"Service proxy upstream error on port {port}: {e}")
+        raise HTTPException(status_code=502, detail="Service unreachable")
+
+    async def _stream():
+        try:
+            async for chunk in upstream.content.iter_any():
+                yield chunk
+        finally:
+            upstream.release()
+
+    return StreamingResponse(
+        _stream(),
+        status_code=upstream.status,
+        headers=filter_response_headers(upstream.headers),
+    )
+
+
+@app.websocket("/s/{token}/{path:path}")
+async def proxy_service_ws(ws: WebSocket, token: str, path: str) -> None:
+    """Proxy a WebSocket to a service inside a sandbox.
+
+    Frames are forwarded verbatim in both directions and the upstream close
+    code is propagated, so the orchestrator stays a dumb pipe — the same
+    contract the PTY proxy already follows.
+    """
+    if not settings.enable_service_endpoints:
+        await ws.close(code=4404)
+        return
+
+    try:
+        _sandbox_id, port, pod_ip = await _resolve_service_target(token)
+    except HTTPException as e:
+        # Resolve before accepting so a rejection is a clean handshake failure
+        # rather than an accepted socket that immediately dies.
+        await ws.close(code=4403 if e.status_code == 403 else 4404)
+        return
+
+    try:
+        upstream = await service_proxy_client.open_websocket(
+            pod_ip=pod_ip,
+            port=port,
+            path=path,
+            query_string=ws.url.query,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to open upstream WS on port {port}: {e}")
+        await ws.close(code=4503)
+        return
+
+    await ws.accept()
+
+    async def _client_to_service() -> None:
+        try:
+            while True:
+                message = await ws.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                if message.get("text") is not None:
+                    await upstream.send_str(message["text"])
+                elif message.get("bytes") is not None:
+                    await upstream.send_bytes(message["bytes"])
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.warning(f"service ws client->service error: {e}")
+        finally:
+            await upstream.close()
+
+    async def _service_to_client() -> None:
+        try:
+            async for message in upstream:
+                if message.type == aiohttp.WSMsgType.TEXT:
+                    await ws.send_text(message.data)
+                elif message.type == aiohttp.WSMsgType.BINARY:
+                    await ws.send_bytes(message.data)
+                elif message.type in (
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                ):
+                    break
+        except Exception as e:
+            logger.warning(f"service ws service->client error: {e}")
+        finally:
+            try:
+                # Propagate the upstream close code so the client can tell a
+                # normal shutdown from a protocol error.
+                close_code = upstream.close_code or 1000
+                await ws.close(code=close_code)
+            except Exception:
+                pass
+
+    to_service = asyncio.create_task(_client_to_service())
+    to_client = asyncio.create_task(_service_to_client())
+    _done, pending = await asyncio.wait(
+        {to_service, to_client}, return_when=asyncio.FIRST_COMPLETED
+    )
+    for task in pending:
+        task.cancel()
+    try:
+        await upstream.close()
     except Exception:
         pass

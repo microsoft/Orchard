@@ -129,6 +129,34 @@ class JobResult:
         return f"JobResult(status={self.status}, exit_code={self.exit_code})"
 
 
+class ServiceEndpoint:
+    """A URL for a service running inside a sandbox.
+
+    Returned by :meth:`SandboxInstance.expose_service`. The URL carries its own
+    credential, so it is a bearer token: anyone holding it can reach that port
+    on that sandbox until ``expires_at``, or until the port is revoked.
+    """
+
+    def __init__(self, data: dict):
+        self.sandbox_id: str = data.get("sandbox_id", "")
+        self.port: int = data.get("port", 0)
+        self.url: str = data.get("url", "")
+        self.expires_at: float = data.get("expires_at", 0.0)
+
+    @property
+    def ws_url(self) -> str:
+        """The same endpoint as a ``ws://``/``wss://`` URL."""
+        if self.url.startswith("https://"):
+            return "wss://" + self.url[len("https://") :]
+        if self.url.startswith("http://"):
+            return "ws://" + self.url[len("http://") :]
+        return self.url
+
+    def __repr__(self) -> str:
+        # The URL is a credential, so it is deliberately not in the repr.
+        return f"ServiceEndpoint(sandbox_id={self.sandbox_id}, port={self.port})"
+
+
 class SandboxInstance:
     """A sandbox instance that supports command execution."""
 
@@ -176,6 +204,79 @@ class SandboxInstance:
         if self._heartbeat_thread:
             self._heartbeat_thread.join(timeout=5)
             self._heartbeat_thread = None
+
+    def heartbeat(self) -> None:
+        """Send a single heartbeat now.
+
+        :meth:`start_heartbeat` owns a background thread, which is the right
+        shape for a long-lived session. Callers driving their own loop — an RL
+        rollout that already ticks per step, or an adapter implementing another
+        framework's heartbeat hook — want one call instead.
+        """
+        self._client._request("POST", f"/sandboxes/{self.sandbox_id}/heartbeat")
+
+    def expose_service(
+        self,
+        port: int,
+        ttl_seconds: int | None = None,
+        wait_ready: bool = False,
+        health_path: str = "/health",
+        ready_timeout: int = 60,
+    ) -> "ServiceEndpoint":
+        """Expose a service running inside the sandbox and return its URL.
+
+        The sandbox agent handles commands and files; this is for a *server*
+        running in the sandbox that a client needs to speak a protocol to — an
+        OpenEnv environment server, an MCP server, a dev server.
+
+        The returned URL authenticates itself, so it works with clients that
+        cannot attach an ``X-API-Key`` header (a raw WebSocket client, a
+        browser). Treat it as a bearer credential: scope it with ``ttl_seconds``
+        and keep it out of logs.
+
+        Args:
+            port: Port the service listens on inside the sandbox.
+            ttl_seconds: Lifetime of the URL. Server default if omitted.
+            wait_ready: Block until the service answers ``health_path``. The
+                sandbox being ready only means the *agent* is up, so a server
+                you just launched may still be starting.
+            health_path: Path polled when ``wait_ready`` is true.
+            ready_timeout: Seconds to wait when ``wait_ready`` is true.
+
+        Returns:
+            ServiceEndpoint: Carries ``url``, ``port``, and ``expires_at``.
+
+        Example::
+
+            sandbox.exec("nohup python -m http.server 8000 &")
+            endpoint = sandbox.expose_service(8000, wait_ready=True, health_path="/")
+            requests.get(endpoint.url)
+        """
+        payload = {
+            "port": port,
+            "wait_ready": wait_ready,
+            "health_path": health_path,
+            "ready_timeout": ready_timeout,
+        }
+        if ttl_seconds is not None:
+            payload["ttl_seconds"] = ttl_seconds
+
+        data = self._client._request(
+            "POST", f"/sandboxes/{self.sandbox_id}/services", json=payload
+        )
+        return ServiceEndpoint(data)
+
+    def list_services(self) -> list[int]:
+        """Return the ports this sandbox currently exposes."""
+        data = self._client._request("GET", f"/sandboxes/{self.sandbox_id}/services")
+        return data.get("ports", [])
+
+    def revoke_service(self, port: int) -> None:
+        """Stop exposing *port*.
+
+        Effective immediately, including for URLs that have not yet expired.
+        """
+        self._client._request("DELETE", f"/sandboxes/{self.sandbox_id}/services/{port}")
 
     def exec(
         self,
@@ -972,6 +1073,57 @@ class AsyncSandboxInstance:
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
+
+    async def heartbeat(self) -> None:
+        """Send a single heartbeat now.
+
+        The async counterpart to :meth:`SandboxInstance.heartbeat`; see there
+        for when to prefer this over :meth:`start_heartbeat`.
+        """
+        await self._client._request("POST", f"/sandboxes/{self.sandbox_id}/heartbeat")
+
+    async def expose_service(
+        self,
+        port: int,
+        ttl_seconds: int | None = None,
+        wait_ready: bool = False,
+        health_path: str = "/health",
+        ready_timeout: int = 60,
+    ) -> "ServiceEndpoint":
+        """Expose a service running inside the sandbox and return its URL.
+
+        The async counterpart to :meth:`SandboxInstance.expose_service`; see
+        there for the full description and the bearer-credential caveat.
+        """
+        payload = {
+            "port": port,
+            "wait_ready": wait_ready,
+            "health_path": health_path,
+            "ready_timeout": ready_timeout,
+        }
+        if ttl_seconds is not None:
+            payload["ttl_seconds"] = ttl_seconds
+
+        data = await self._client._request(
+            "POST", f"/sandboxes/{self.sandbox_id}/services", json=payload
+        )
+        return ServiceEndpoint(data)
+
+    async def list_services(self) -> list[int]:
+        """Return the ports this sandbox currently exposes."""
+        data = await self._client._request(
+            "GET", f"/sandboxes/{self.sandbox_id}/services"
+        )
+        return data.get("ports", [])
+
+    async def revoke_service(self, port: int) -> None:
+        """Stop exposing *port*.
+
+        Effective immediately, including for URLs that have not yet expired.
+        """
+        await self._client._request(
+            "DELETE", f"/sandboxes/{self.sandbox_id}/services/{port}"
+        )
 
     async def exec(
         self,

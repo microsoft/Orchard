@@ -124,6 +124,65 @@ class RedisSandboxStore:
         logger.debug(f"Updated sandbox {sandbox_id}: {updates}")
         return True
 
+    async def mutate_sandbox(
+        self, sandbox_id: str, mutate, max_attempts: int = 5
+    ) -> dict | None:
+        """Apply a read-modify-write to a sandbox record atomically.
+
+        ``update_sandbox`` is fine for last-write-wins fields, but it loses
+        updates when two callers modify a *collection* concurrently: both read
+        the old value and the second write discards the first. This runs the
+        mutation inside a ``WATCH``/``MULTI`` transaction and retries if another
+        writer touched the record in between.
+
+        Args:
+            sandbox_id: Sandbox to modify.
+            mutate: Callable taking the current record dict and returning the
+                fields to write. Returning ``None`` aborts without writing.
+                It may be called more than once, so it must be side-effect free.
+            max_attempts: Retries before giving up on contention.
+
+        Returns:
+            The full updated record, or None if the sandbox does not exist or
+            the mutation aborted.
+
+        Raises:
+            TimeoutError: If the record stayed contended for every attempt.
+        """
+        client = await self._ensure_connected()
+        key = f"{self.SANDBOX_PREFIX}{sandbox_id}"
+
+        for _attempt in range(max_attempts):
+            async with client.pipeline() as pipe:
+                try:
+                    await pipe.watch(key)
+                    data = await pipe.get(key)
+                    if not data:
+                        await pipe.unwatch()
+                        return None
+
+                    sandbox_data = json.loads(data)
+                    updates = mutate(sandbox_data)
+                    if updates is None:
+                        await pipe.unwatch()
+                        return None
+
+                    sandbox_data.update(updates)
+                    pipe.multi()
+                    # Buffered until execute(): not awaited, unlike the
+                    # immediate-mode watch/get calls above.
+                    pipe.set(key, json.dumps(sandbox_data), ex=self.DEFAULT_TTL)
+                    await pipe.execute()
+                    return sandbox_data
+                except redis.WatchError:
+                    # Another replica wrote first; re-read and reapply.
+                    continue
+
+        raise TimeoutError(
+            f"Could not update sandbox {sandbox_id} after {max_attempts} attempts "
+            "due to contention"
+        )
+
     async def delete_sandbox(self, sandbox_id: str) -> bool:
         """Delete sandbox metadata.
 

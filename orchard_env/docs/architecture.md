@@ -121,6 +121,8 @@ backoff and jitter. See the [SDK reference](sdk.md).
 | `sandbox_manager.py` | Sandbox lifecycle, pod-IP caching, TTL/heartbeat cleanup, cluster reconciliation |
 | `exec_manager.py` | Submits exec jobs, serialises them per sandbox, bounds global concurrency, retries agent-connect failures |
 | `agent_client.py` | Pooled `aiohttp` client that talks directly to pod IPs |
+| `service_proxy.py` | Pooled `aiohttp` client and helpers for proxying user services inside sandboxes (port allowlisting, header filtering) |
+| `service_tokens.py` | Mint and verify the signed, expiring capability tokens that authenticate service URLs |
 | `k8s_client.py` | Kubernetes API wrapper — pod spec construction, network policies, throttling, retries |
 | `pod_watcher.py` | Kubernetes `Watch` informer keeping live pod phase and pod IP in memory |
 | `job_store.py` / `redis_job_store.py` | Job state — in-memory (single replica) or Redis (multi-replica) |
@@ -224,6 +226,38 @@ client falls back to polling `GET /jobs/{id}`. **A `"running"` status never mean
 Uploads, downloads, and listings take the same route: the orchestrator resolves
 the pod IP and forwards a base64 payload to the agent. `apply_patch()` writes the
 diff into the sandbox and runs `git apply` through the exec path.
+
+### Proxy to a service inside a sandbox
+
+```
+sandbox.expose_service(8000)
+   │
+   └─► POST /sandboxes/{id}/services
+          ├── refuse the agent port and any operator-reserved port
+          ├── add 8000 to the sandbox record's exposed_ports (Redis or memory)
+          ├── optionally poll the service's own health path
+          └── mint an HMAC capability token naming (sandbox, port, expiry)
+                 → https://orchestrator/s/<token>
+
+GET  https://orchestrator/s/<token>/health
+WS   wss://orchestrator/s/<token>/ws
+   │
+   └─► verify signature → check expiry → sandbox still exists?
+          → port still in exposed_ports?  (this is what makes revocation instant)
+          → resolve pod IP from the PodWatcher cache
+          → forward to pod:8000, stripping hop-by-hop headers
+```
+
+Two things distinguish this from the exec path. The credential lives in the URL
+rather than a header, because the clients that need it — a raw WebSocket client,
+a browser — cannot attach one. And the token is a *stateless* HMAC, so any
+replica validates a token minted by any other without shared state, while
+revocation still takes effect immediately because the allowlist is re-read on
+every request.
+
+Kubernetes note: the pod spec is unchanged. `containerPort` is informational, so
+any process listening on `0.0.0.0` inside the pod is already reachable at the pod
+IP. What this adds is reachability from *outside* the cluster.
 
 ### Delete a sandbox
 

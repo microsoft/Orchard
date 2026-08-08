@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 from orchard_env.orchestrator.k8s_client import K8sClient
 from orchard_env.orchestrator.settings import settings
@@ -26,6 +26,10 @@ class Sandbox:
     ready: bool = False
     creation_timeout: int = 3600  # Timeout requested during creation
     last_heartbeat: float | None = None  # Last heartbeat timestamp
+    # Ports explicitly opened through the service-endpoint proxy. Empty by
+    # default: a sandbox exposes nothing until an operator asks for it, and
+    # removing a port here revokes access immediately even for unexpired tokens.
+    exposed_ports: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
@@ -33,8 +37,13 @@ class Sandbox:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Sandbox":
-        """Create from dictionary."""
-        return cls(**data)
+        """Create from dictionary.
+
+        Unknown keys are ignored so that a replica running an older build can
+        still read a record written by a newer one during a rolling upgrade.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{key: value for key, value in data.items() if key in known})
 
 
 class SandboxManager:
@@ -635,6 +644,111 @@ class SandboxManager:
         now = time.time()
         await self._update_sandbox(sandbox_id, {"last_heartbeat": now})
         logger.debug(f"Heartbeat received for sandbox {sandbox_id}")
+        return True
+
+    async def _mutate_sandbox(self, sandbox_id: str, mutate):
+        """Apply a read-modify-write to a sandbox record without losing updates.
+
+        Concurrent callers modifying a collection field must not clobber each
+        other, so this uses an atomic Redis transaction when Redis is enabled
+        and the existing global lock in single-replica memory mode.
+
+        Args:
+            sandbox_id: Sandbox to modify.
+            mutate: Callable taking the record (as a dict) and returning the
+                fields to write, or None to abort. May be retried, so it must
+                be side-effect free.
+
+        Returns:
+            The updated record dict, or None if the sandbox is gone or the
+            mutation aborted.
+        """
+        redis_store = await self._get_redis_store()
+
+        if redis_store:
+            return await redis_store.mutate_sandbox(sandbox_id, mutate)
+
+        async with self._global_lock:
+            sandbox = self._sandboxes.get(sandbox_id)
+            if not sandbox:
+                return None
+            record = sandbox.to_dict()
+            updates = mutate(record)
+            if updates is None:
+                return None
+            for key, value in updates.items():
+                setattr(sandbox, key, value)
+            return sandbox.to_dict()
+
+    async def expose_service(self, sandbox_id: str, port: int) -> list[int] | None:
+        """Add *port* to a sandbox's exposed-port allowlist.
+
+        Returns the updated allowlist, or None if the sandbox does not exist.
+        Idempotent: re-exposing an already-exposed port is not an error, so a
+        caller that retries after a network blip does not need to special-case
+        it.
+
+        Raises:
+            ValueError: If the sandbox already exposes the configured maximum
+                number of ports.
+        """
+        limit_exceeded = False
+
+        def _add(record: dict) -> dict | None:
+            nonlocal limit_exceeded
+            limit_exceeded = False
+            exposed = list(record.get("exposed_ports") or [])
+            if port in exposed:
+                # Already present: abort the write, the state is what we want.
+                return None
+            if len(exposed) >= settings.max_services_per_sandbox:
+                limit_exceeded = True
+                return None
+            exposed.append(port)
+            return {"exposed_ports": exposed}
+
+        updated = await self._mutate_sandbox(sandbox_id, _add)
+
+        if limit_exceeded:
+            raise ValueError(
+                f"Sandbox {sandbox_id} already exposes "
+                f"{settings.max_services_per_sandbox} ports "
+                "(MAX_SERVICES_PER_SANDBOX)"
+            )
+
+        if updated is None:
+            # Either the sandbox is gone, or the port was already exposed.
+            sandbox = await self.get_sandbox(sandbox_id)
+            if not sandbox:
+                return None
+            return list(sandbox.exposed_ports or [])
+
+        logger.info(f"Exposed port {port} on sandbox {sandbox_id}")
+        return list(updated.get("exposed_ports") or [])
+
+    async def revoke_service(self, sandbox_id: str, port: int) -> bool:
+        """Remove *port* from a sandbox's allowlist.
+
+        Revocation takes effect immediately, including for capability tokens
+        that have not yet expired, because the proxy re-checks the allowlist on
+        every request.
+
+        Returns:
+            True if the port was exposed and has been revoked.
+        """
+
+        def _remove(record: dict) -> dict | None:
+            exposed = list(record.get("exposed_ports") or [])
+            if port not in exposed:
+                return None
+            exposed.remove(port)
+            return {"exposed_ports": exposed}
+
+        updated = await self._mutate_sandbox(sandbox_id, _remove)
+        if updated is None:
+            return False
+
+        logger.info(f"Revoked port {port} on sandbox {sandbox_id}")
         return True
 
     async def cleanup_expired_sandboxes(self) -> int:

@@ -243,7 +243,33 @@ matching upper-case environment variable.
 | `REDIS_URL` | in-cluster Redis | Redis connection URL |
 | `REQUIRE_API_KEY` | `true` | Enforce `X-API-Key` |
 | `API_KEYS` | (secret) | Comma/whitespace-separated valid keys |
+| `ENABLE_SERVICE_ENDPOINTS` | `false` | Allow exposing services inside sandboxes |
+| `SERVICE_PUBLIC_BASE_URL` | — | Public URL of the orchestrator, e.g. `https://orchard.example.com` |
+| `SERVICE_TRUST_FORWARDED_HEADERS` | `false` | Trust `X-Forwarded-Proto`/`X-Forwarded-Host` when the base URL is unset |
+| `SERVICE_TOKEN_SECRET` | — | HMAC key for service URLs; **set this for multi-replica** |
+| `SERVICE_TOKEN_TTL_SECONDS` | `3600` | Lifetime of a service URL |
+| `SERVICE_RESERVED_PORTS` | — | Extra ports that may never be exposed |
+| `MAX_SERVICES_PER_SANDBOX` | `8` | Ports one sandbox may expose at once |
+| `SERVICE_TRAFFIC_REFRESHES_HEARTBEAT` | `true` | Proxied traffic keeps the sandbox alive |
+| `SERVICE_PROXY_TIMEOUT_SECONDS` | `300` | Upstream request timeout |
+| `SERVICE_PROXY_MAX_MESSAGE_BYTES` | `16777216` | Max proxied WebSocket frame |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | Logging |
+
+Service endpoints are off by default because they deliberately open a hole in
+the sandbox boundary. When enabling them:
+
+- Set `SERVICE_PUBLIC_BASE_URL` to the orchestrator's public URL. The service
+  URL contains a credential, so where it points matters: without this the URL
+  is derived from request headers, and a forged `X-Forwarded-Host` would send
+  the caller — and the token — to an attacker's domain. Only set
+  `SERVICE_TRUST_FORWARDED_HEADERS=true` if a proxy you control overwrites
+  those headers on every request.
+- Set `SERVICE_TOKEN_SECRET` if you run more than one replica, so every replica
+  validates URLs minted by any other.
+- Terminate TLS at the ingress, and point `SERVICE_PUBLIC_BASE_URL` at the
+  `https://` address so WebSocket URLs become `wss://`.
+- The agent port (`AGENT_PORT`) is always refused; add anything else sensitive
+  to `SERVICE_RESERVED_PORTS`.
 
 Apply changes with:
 

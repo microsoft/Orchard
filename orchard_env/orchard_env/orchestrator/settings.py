@@ -74,6 +74,43 @@ class Settings(BaseSettings):
     #                     into a shared emptyDir (~600 MB of ephemeral disk per pod).
     sandbox_tools_volume_mode: str = "image"
 
+    # Sandbox service endpoints — proxy HTTP/WebSocket traffic to a user
+    # service running inside a sandbox (an OpenEnv environment server, an MCP
+    # server, a dev server). Disabled by default: it deliberately opens a hole
+    # in the sandbox boundary, so an operator has to ask for it.
+    enable_service_endpoints: bool = False
+    # Extra ports that may never be exposed, on top of agent_port which is
+    # always refused. Comma- or space-separated.
+    service_reserved_ports: str = ""
+    # Maximum number of ports a single sandbox may expose at once.
+    max_services_per_sandbox: int = 8
+    # Lifetime of a capability token. Short by default: the URL is a bearer
+    # credential, and callers can mint a new one whenever they need it.
+    service_token_ttl_seconds: int = 3600
+    # HMAC key for capability tokens. REQUIRED for multi-replica deployments so
+    # every replica validates tokens minted by any other. When unset the key is
+    # derived from the configured API keys, or randomly generated per process.
+    service_token_secret: str | None = None
+    # Whether proxied traffic refreshes the sandbox's liveness timer, so an
+    # actively used service is not reaped mid-session by heartbeat cleanup.
+    service_traffic_refreshes_heartbeat: bool = True
+    # Public base URL clients use to reach the orchestrator, e.g.
+    # "https://orchard.example.com". Set this whenever the orchestrator sits
+    # behind a proxy you do not control end to end: without it the service URL
+    # is derived from request headers, and a forged X-Forwarded-Host would send
+    # the caller (and the capability token in the URL) to an attacker's domain.
+    service_public_base_url: str | None = None
+    # Whether to trust X-Forwarded-Proto/X-Forwarded-Host when
+    # SERVICE_PUBLIC_BASE_URL is unset. Only enable behind a proxy that
+    # overwrites those headers on every request.
+    service_trust_forwarded_headers: bool = False
+    # Proxy connection pool and timeouts.
+    service_proxy_pool_size: int = 200
+    service_proxy_pool_limit_per_host: int = 20
+    service_proxy_connect_timeout: int = 5
+    service_proxy_timeout_seconds: int = 300
+    service_proxy_max_message_bytes: int = 16 * 1024 * 1024
+
     # Sandbox pod probes for the in-pod agent (/health on agent_port).
     # startupProbe covers the agent boot window AFTER the container starts;
     # while it runs, readiness/liveness are suppressed so an agent that is

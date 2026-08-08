@@ -17,6 +17,11 @@ python -m pytest tests/test_exec_timeout.py::TestJobResult -v
 | [`test_exec_timeout.py`](test_exec_timeout.py) | `JobResult` status semantics and the sync-exec polling fallback — in particular that a `"running"` status is **never** treated as complete |
 | [`test_resources.py`](test_resources.py) | `GET /resources` and the CPU/memory quantity parsers |
 | [`test_file_listing.py`](test_file_listing.py) | The file-listing response model — regression cover for the int-vs-str `size` bug that made `GET /files/list` return 500 for non-empty directories |
+| [`test_service_tokens.py`](test_service_tokens.py) | Capability tokens for service endpoints — forged signatures, tampered payloads, expiry, and signing-key derivation |
+| [`test_service_proxy.py`](test_service_proxy.py) | Service-proxy helpers — port allowlisting (the agent port is never exposable), hop-by-hop header stripping, and upstream URL building |
+| [`test_service_endpoints.py`](test_service_endpoints.py) | The service-endpoint routes end to end against a real in-process upstream: exposing, revoking, HTTP proxying (including streaming and compressed bodies), and WebSocket round-trips |
+| [`test_service_allowlist.py`](test_service_allowlist.py) | The exposed-port allowlist, including that concurrent exposes/revokes do not lose each other's writes on either backend |
+| [`test_redis_mutate.py`](test_redis_mutate.py) | `RedisSandboxStore.mutate_sandbox` — the compare-and-set the allowlist depends on, including retry when another replica writes first |
 
 ## Integration scripts — `tests/integration/`
 
@@ -36,6 +41,7 @@ export SANDBOX_API_KEY="your-api-key"
 | [`sandbox_tools.py`](integration/sandbox_tools.py) | 11 checks on the bundled agent harnesses: PATH ordering, read-only mount, login shell, `kubectl exec` reachability, and that `hermes` leaves the image's own `python` untouched |
 | [`bench_concurrent.py`](integration/bench_concurrent.py) | Concurrency benchmark — P50/P90/P95/P99 latency for create/exec/delete |
 | [`bench_concurrent_pty.py`](integration/bench_concurrent_pty.py) | The same, for PTY sessions |
+| [`service_endpoint.py`](integration/service_endpoint.py) | Service endpoints against a live cluster: launch a server inside a sandbox, expose it, drive it over HTTP, confirm a large response is not truncated, and confirm revocation is immediate. Needs `ENABLE_SERVICE_ENDPOINTS=true`. |
 
 ```bash
 python tests/integration/soak.py --mode both --rounds 50

@@ -37,6 +37,11 @@ export BASE_URL=http://localhost:8000
 | `POST` | `/sandboxes/{sandbox_id}/files` | Upload a file |
 | `GET` | `/sandboxes/{sandbox_id}/files` | Download a file |
 | `GET` | `/sandboxes/{sandbox_id}/files/list` | List a directory |
+| `POST` | `/sandboxes/{sandbox_id}/services` | Expose a service port |
+| `GET` | `/sandboxes/{sandbox_id}/services` | List exposed ports |
+| `DELETE` | `/sandboxes/{sandbox_id}/services/{port}` | Revoke an exposed port |
+| `ANY` | `/s/{token}/{path}` | Proxy HTTP to a sandbox service |
+| `WS` | `/s/{token}/{path}` | Proxy a WebSocket to a sandbox service |
 | `GET` | `/jobs/{job_id}` | Get job status and results |
 | `GET` | `/jobs/{job_id}/wait` | Block until the job completes |
 
@@ -197,6 +202,116 @@ X-API-Key: your-api-key
 ```
 
 `size` is an integer (bytes). `type` is `"file"` or `"directory"`.
+
+### Service endpoints
+
+Exec and file I/O cover agents that *run commands*. Some workloads instead
+speak a protocol to a long-running server inside the sandbox — an OpenEnv
+environment server, an MCP server, a dev server, an evaluation endpoint. Those
+need a reachable URL.
+
+Disabled by default. Set `ENABLE_SERVICE_ENDPOINTS=true` on the orchestrator to
+turn them on.
+
+#### Expose a port
+
+```http
+POST /sandboxes/{sandbox_id}/services
+Content-Type: application/json
+X-API-Key: your-api-key
+
+{
+  "port": 8000,
+  "ttl_seconds": 3600,
+  "wait_ready": true,
+  "health_path": "/health",
+  "ready_timeout": 60
+}
+```
+
+```json
+{
+  "sandbox_id": "abc12345",
+  "port": 8000,
+  "url": "https://orchestrator.example.com/s/eyJ...signed-token",
+  "expires_at": 1702903600.0
+}
+```
+
+`wait_ready` blocks until the service answers `health_path`. This is worth
+setting: a sandbox reports ready when the *in-pod agent* is up, which can be
+well before a server you just launched has finished binding.
+
+Re-exposing an already-exposed port is not an error, so a client that retries
+after a network blip does not need to special-case it.
+
+**The returned URL is a bearer credential.** Anyone holding it can reach that
+port on that sandbox until it expires. Keep it out of logs, scope it with
+`ttl_seconds`, and revoke it when the work is done.
+
+#### Use the endpoint
+
+The token travels in the path, so no header is required — which is the point:
+clients that cannot set headers (a raw WebSocket client, a browser) still work.
+Appending a path also just works, so an OpenEnv client that adds `/ws` produces
+a valid URL with no special-casing.
+
+```bash
+curl "$URL/health"                       # HTTP
+websocat "${URL/https:/wss:}/ws"         # WebSocket
+```
+
+Every request re-checks the signature, the expiry, that the sandbox still
+exists, and that the port is still exposed.
+
+#### List and revoke
+
+```http
+GET /sandboxes/{sandbox_id}/services
+X-API-Key: your-api-key
+```
+
+```json
+{ "sandbox_id": "abc12345", "ports": [8000] }
+```
+
+```http
+DELETE /sandboxes/{sandbox_id}/services/8000
+X-API-Key: your-api-key
+```
+
+```json
+{ "status": "revoked", "sandbox_id": "abc12345", "port": 8000 }
+```
+
+Revocation is immediate: URLs that have not yet expired stop working, because
+the allowlist is consulted on every request.
+
+#### Security notes
+
+- The in-pod agent port (`AGENT_PORT`, default `9090`) can never be exposed —
+  it would hand out unauthenticated exec and file access inside the sandbox.
+  `SERVICE_RESERVED_PORTS` adds more ports to that list.
+- Terminate TLS at your ingress. Set `SERVICE_PUBLIC_BASE_URL` to the
+  orchestrator's public `https://` address so service URLs are `https://` and
+  WebSockets are `wss://`. This also stops a forged `X-Forwarded-Host` from
+  redirecting the URL — and the credential in it — to another domain.
+- In a multi-replica deployment set `SERVICE_TOKEN_SECRET` so every replica
+  validates tokens minted by any other. Without it the key is derived from the
+  configured API keys, or generated per process as a last resort.
+- Proxied traffic refreshes the sandbox's liveness timer by default
+  (`SERVICE_TRAFFIC_REFRESHES_HEARTBEAT`), so an actively used service is not
+  reaped mid-session.
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Port is out of range or reserved |
+| `403` | Token is invalid, expired, or the port is no longer exposed |
+| `404` | Sandbox not found, or service endpoints are disabled |
+| `408` | `wait_ready` timed out |
+| `409` | Sandbox already exposes `MAX_SERVICES_PER_SANDBOX` ports |
+| `502` | Service inside the sandbox is unreachable |
+| `504` | Service did not respond in time |
 
 ### Delete a sandbox
 
