@@ -234,26 +234,35 @@ sandbox.expose_service(8000)
    │
    └─► POST /sandboxes/{id}/services
           ├── refuse the agent port and any operator-reserved port
-          ├── add 8000 to the sandbox record's exposed_ports (Redis or memory)
           ├── optionally poll the service's own health path
-          └── mint an HMAC capability token naming (sandbox, port, expiry)
-                 → https://orchestrator/s/<token>
+          ├── store (port → generation) outside the sandbox JSON record
+          └── mint an HMAC capability naming
+              (sandbox, port, generation, expiry)
+                 → https://<capability>.sandboxes.example.net/s/<token>
 
-GET  https://orchestrator/s/<token>/health
-WS   wss://orchestrator/s/<token>/ws
+GET  https://<capability>.sandboxes.example.net/s/<token>/health
+WS   wss://<capability>.sandboxes.example.net/s/<token>/ws
    │
    └─► verify signature → check expiry → sandbox still exists?
-          → port still in exposed_ports?  (this is what makes revocation instant)
+          → generation still active?  (revocation never revives on re-expose)
           → resolve pod IP from the PodWatcher cache
-          → forward to pod:8000, stripping hop-by-hop headers
+          → forward to pod:8000, pinned against cross-destination redirects
 ```
 
 Two things distinguish this from the exec path. The credential lives in the URL
 rather than a header, because the clients that need it — a raw WebSocket client,
 a browser — cannot attach one. And the token is a *stateless* HMAC, so any
 replica validates a token minted by any other without shared state, while
-revocation still takes effect immediately because the allowlist is re-read on
-every request.
+revocation still takes effect immediately because the active generation is
+re-read on every request. Service state lives in a separate Redis hash so older
+replicas can continue reading the unchanged sandbox-record schema during a
+rolling upgrade.
+
+Each capability receives a different hostname under a wildcard service domain,
+so hostile browser state is isolated between services as well as from the
+management API. Management credentials and cookies are stripped before
+forwarding, while sandbox cookies and broad service-worker headers are stripped
+on the way back.
 
 Kubernetes note: the pod spec is unchanged. `containerPort` is informational, so
 any process listening on `0.0.0.0` inside the pod is already reachable at the pod
@@ -310,6 +319,11 @@ runs its own `PodWatcher`, so pod-IP lookups stay local and free.
 
 With `USE_REDIS=false` the orchestrator keeps everything in memory and **must**
 run as a single replica.
+
+The reference Redis deployment requires authentication and applies an ingress
+NetworkPolicy that permits only `app=sandbox-orchestrator` pods. This is a
+control-plane boundary: a sandbox with egress enabled must not be able to
+restore revoked capability generations or alter lifecycle state.
 
 ## Throughput notes
 

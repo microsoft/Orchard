@@ -32,6 +32,7 @@ import time
 import uuid
 from http.client import RemoteDisconnected
 from typing import TYPE_CHECKING, Union
+from urllib.parse import urlsplit
 
 import aiohttp
 import requests
@@ -39,6 +40,39 @@ from requests.exceptions import ChunkedEncodingError, ConnectionError, Timeout
 
 if TYPE_CHECKING:
     from orchard_env.client.process import AsyncContainerProcess, ContainerProcess
+
+
+def _origin(url: str) -> tuple[str, str, int]:
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme.lower(),
+        (parsed.hostname or "").lower(),
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
+
+
+class _ScopedApiKeySession(requests.Session):
+    """Attach the management key only to the configured orchestrator origin."""
+
+    def __init__(self, base_url: str, api_key: str | None):
+        super().__init__()
+        self._management_origin = _origin(base_url)
+        self._api_key = api_key
+
+    def prepare_request(self, request):
+        prepared = super().prepare_request(request)
+        if self._api_key and _origin(prepared.url) == self._management_origin:
+            prepared.headers["X-API-Key"] = self._api_key
+        else:
+            prepared.headers.pop("X-API-Key", None)
+        return prepared
+
+    def rebuild_auth(self, prepared_request, response):
+        super().rebuild_auth(prepared_request, response)
+        if self._api_key and _origin(prepared_request.url) == self._management_origin:
+            prepared_request.headers["X-API-Key"] = self._api_key
+        else:
+            prepared_request.headers.pop("X-API-Key", None)
 
 
 # Global registry for tracking sandboxes to cleanup on exit
@@ -745,11 +779,9 @@ class SandboxClient:
             base_url or os.environ.get("SANDBOX_BASE_URL") or "http://localhost:8000"
         ).rstrip("/")
         self.timeout = timeout
-        self.session = requests.Session()
         # Use provided api_key or fall back to environment variable
         self.api_key = api_key or os.environ.get("SANDBOX_API_KEY")
-        if self.api_key:
-            self.session.headers["X-API-Key"] = self.api_key
+        self.session = _ScopedApiKeySession(self.base_url, self.api_key)
         # Use provided prefix or fall back to environment variable
         self.prefix = prefix or os.environ.get("SANDBOX_PREFIX")
         self.max_retries = 3

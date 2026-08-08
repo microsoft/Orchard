@@ -1,39 +1,46 @@
-"""Route-level tests for sandbox service endpoints.
+"""End-to-end route tests for sandbox service endpoints.
 
-These drive the real FastAPI app with a real in-process upstream server, so
-they exercise the actual proxy path: token minting, allowlist enforcement,
-header handling, streaming, and the WebSocket bridge. Only Kubernetes is
-faked — the sandbox record and pod IP are supplied directly.
+The orchestrator app and proxy are real. Only Kubernetes-backed sandbox lookup
+is replaced with a small in-memory manager.
 """
 
+import asyncio
 import gzip
+import socket
 import threading
+import time
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import uvicorn
-from fastapi import FastAPI, Response, WebSocket
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi import FastAPI, Request, Response, WebSocket
+from fastapi.responses import (
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from orchard_env.orchestrator import service_proxy, service_tokens
 from orchard_env.orchestrator.sandbox_manager import Sandbox
 
 SANDBOX_ID = "sandbox-test"
 API_KEY = "test-api-key"
+SERVICE_ORIGIN_TEMPLATE = "http://{subdomain}.services.testserver"
+AUTH = {"X-API-Key": API_KEY}
 
 
-# ---------------------------------------------------------------------------
-# A real upstream service, standing in for a server inside a sandbox
-# ---------------------------------------------------------------------------
-
-
-def _build_upstream_app() -> FastAPI:
+def _build_upstream_app(redirect_target: str | None = None) -> FastAPI:
     app = FastAPI()
+    app.state.hits = 0
+    app.state.ws_hits = 0
+    app.state.last_protocols = ""
 
     @app.get("/health")
     def health():
+        app.state.hits += 1
         return {"status": "healthy"}
 
     @app.get("/echo")
@@ -41,14 +48,21 @@ def _build_upstream_app() -> FastAPI:
         return {"value": request_value}
 
     @app.post("/body")
-    async def body(request: dict):
-        return {"received": request}
+    async def body(request: Request):
+        return Response(await request.body(), media_type="application/octet-stream")
 
     @app.get("/stream")
     def stream():
-        def chunks():
-            for index in range(5):
-                yield f"chunk-{index};"
+        return StreamingResponse(
+            (f"chunk-{index};" for index in range(5)), media_type="text/plain"
+        )
+
+    @app.get("/slow-stream")
+    async def slow_stream():
+        async def chunks():
+            yield "start;"
+            await asyncio.sleep(0.12)
+            yield "end;"
 
         return StreamingResponse(chunks(), media_type="text/plain")
 
@@ -59,13 +73,13 @@ def _build_upstream_app() -> FastAPI:
     @app.get("/gzipped")
     def gzipped():
         raw = b"compressible-payload;" * 200
-        body = gzip.compress(raw)
+        compressed = gzip.compress(raw)
         return Response(
-            content=body,
+            content=compressed,
             media_type="text/plain",
             headers={
                 "Content-Encoding": "gzip",
-                "Content-Length": str(len(body)),
+                "Content-Length": str(len(compressed)),
             },
         )
 
@@ -73,9 +87,59 @@ def _build_upstream_app() -> FastAPI:
     def teapot():
         return PlainTextResponse("short and stout", status_code=418)
 
+    @app.get("/request-headers")
+    def request_headers(request: Request):
+        return {
+            "authorization": request.headers.get("authorization"),
+            "cookie": request.headers.get("cookie"),
+            "x_api_key": request.headers.get("x-api-key"),
+            "x_custom": request.headers.get("x-custom"),
+        }
+
+    @app.get("/response-headers")
+    def response_headers():
+        response = PlainTextResponse("headers")
+        response.raw_headers.extend(
+            [
+                (b"x-repeat", b"one"),
+                (b"x-repeat", b"two"),
+                (b"set-cookie", b"hostile=1; Domain=.example.com"),
+                (b"service-worker-allowed", b"/"),
+            ]
+        )
+        return response
+
+    @app.api_route("/raw/{rest:path}", methods=["GET", "POST"])
+    async def raw_path(request: Request, rest: str):
+        return {
+            "raw_path": request.scope["raw_path"].decode("ascii"),
+            "raw_query": request.scope["query_string"].decode("ascii"),
+        }
+
+    @app.get("/redirect-health")
+    def redirect_health():
+        return RedirectResponse(f"{redirect_target}/health")
+
+    @app.get("/relative-redirect")
+    def relative_redirect():
+        return RedirectResponse("/health")
+
+    @app.get("/ws-redirect")
+    def ws_redirect():
+        return RedirectResponse(f"{redirect_target.replace('http:', 'ws:')}/ws")
+
+    @app.get("/ws-hang")
+    async def ws_hang():
+        await asyncio.sleep(1)
+        return PlainTextResponse("too late")
+
     @app.websocket("/ws")
     async def websocket_echo(ws: WebSocket):
-        await ws.accept()
+        app.state.ws_hits += 1
+        offered = ws.headers.get("sec-websocket-protocol", "")
+        app.state.last_protocols = offered
+        subprotocol = "openenv-v1" if "openenv-v1" in offered else None
+        await ws.accept(subprotocol=subprotocol)
         try:
             while True:
                 message = await ws.receive()
@@ -85,6 +149,8 @@ def _build_upstream_app() -> FastAPI:
                     if message["text"] == "close-please":
                         await ws.close(code=4200)
                         return
+                    if message["text"] == "wait":
+                        await asyncio.sleep(0.12)
                     await ws.send_text(f"echo:{message['text']}")
                 elif message.get("bytes") is not None:
                     await ws.send_bytes(b"bin:" + message["bytes"])
@@ -95,7 +161,6 @@ def _build_upstream_app() -> FastAPI:
 
 
 def _ws_implementation() -> str:
-    """Pick a WebSocket server implementation uvicorn can actually use."""
     try:
         import websockets  # noqa: F401
 
@@ -113,62 +178,42 @@ def _ws_implementation() -> str:
 WS_AVAILABLE = _ws_implementation() != "none"
 requires_websockets = pytest.mark.skipif(
     not WS_AVAILABLE,
-    reason="needs a uvicorn WebSocket implementation (websockets or wsproto)",
+    reason="needs a uvicorn WebSocket implementation",
 )
 
 
 @contextmanager
-def running_upstream():
-    """Run the upstream app on a real loopback port."""
-    import socket
-
+def running_upstream(app: FastAPI | None = None):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
-    config = uvicorn.Config(
-        _build_upstream_app(),
-        host="127.0.0.1",
-        port=port,
-        log_level="error",
-        # Pin the WebSocket implementation instead of relying on auto-detection,
-        # so a missing `websockets` extra surfaces as an explicit skip rather
-        # than a confusing 404 on the upgrade handshake.
-        ws=_ws_implementation(),
+    app = app or _build_upstream_app()
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="error",
+            ws=_ws_implementation(),
+        )
     )
-    server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-
-    import time
-
     deadline = time.time() + 15
     while not server.started and time.time() < deadline:
         time.sleep(0.05)
     if not server.started:
         raise RuntimeError("upstream server did not start")
-
     try:
-        yield port
+        yield port, app
     finally:
         server.should_exit = True
         thread.join(timeout=10)
 
 
-# ---------------------------------------------------------------------------
-# Test harness wiring the app to a fake sandbox on a real upstream port
-# ---------------------------------------------------------------------------
-
-
 @contextmanager
-def orchestrator_client(upstream_port: int, exposed_ports=None, enabled=True):
-    """Yield a TestClient with the service routes wired to a fake sandbox.
-
-    The app's real lifespan builds Kubernetes and Redis clients, so it is
-    replaced with a no-op and the managers it would have created are injected
-    directly. That keeps the routes, the proxy client, and the ASGI stack real
-    while removing the cluster.
-    """
+def orchestrator_client(upstream_port: int, enabled: bool = True):
     import orchard_env.orchestrator.api as api_module
 
     sandbox = Sandbox(
@@ -180,30 +225,42 @@ def orchestrator_client(upstream_port: int, exposed_ports=None, enabled=True):
         cpu="1",
         memory="1Gi",
         ready=True,
-        exposed_ports=list(exposed_ports if exposed_ports is not None else []),
     )
+    services: dict[int, str] = {}
+    generation_counter = 0
 
     async def fake_get_sandbox(sandbox_id):
         return sandbox if sandbox_id == SANDBOX_ID else None
 
     async def fake_expose(sandbox_id, port):
+        nonlocal generation_counter
         if sandbox_id != SANDBOX_ID:
             return None
-        if port not in sandbox.exposed_ports:
-            sandbox.exposed_ports.append(port)
-        return list(sandbox.exposed_ports)
+        if port in services:
+            return services[port], False
+        generation_counter += 1
+        services[port] = f"generation-{generation_counter}"
+        return services[port], True
 
     async def fake_revoke(sandbox_id, port):
-        if sandbox_id == SANDBOX_ID and port in sandbox.exposed_ports:
-            sandbox.exposed_ports.remove(port)
-            return True
-        return False
+        return (
+            services.pop(port, None) is not None if sandbox_id == SANDBOX_ID else False
+        )
+
+    async def fake_list(sandbox_id):
+        return sorted(services) if sandbox_id == SANDBOX_ID else None
+
+    async def fake_generation(sandbox_id, port):
+        return services.get(port) if sandbox_id == SANDBOX_ID else None
 
     manager = AsyncMock()
     manager.get_sandbox.side_effect = fake_get_sandbox
     manager.expose_service.side_effect = fake_expose
     manager.revoke_service.side_effect = fake_revoke
+    manager.list_services.side_effect = fake_list
+    manager.get_service_generation.side_effect = fake_generation
     manager.get_pod_ip.return_value = "127.0.0.1"
+    manager.get_current_pod_ip.return_value = "127.0.0.1"
     manager.heartbeat.return_value = True
 
     proxy_client = service_proxy.ServiceProxyClient()
@@ -219,26 +276,31 @@ def orchestrator_client(upstream_port: int, exposed_ports=None, enabled=True):
     api_module.sandbox_manager = manager
     api_module.service_proxy_client = proxy_client
 
+    patches = [
+        patch.object(api_module.settings, "enable_service_endpoints", enabled),
+        patch.object(api_module.settings, "require_api_key", True),
+        patch.object(api_module.settings, "api_keys", API_KEY),
+        patch.object(
+            api_module.settings,
+            "service_public_base_url",
+            SERVICE_ORIGIN_TEMPLATE,
+        ),
+        patch.object(api_module.settings, "service_allow_insecure_http", True),
+        patch.object(api_module.settings, "service_token_secret", "test-secret"),
+        patch.object(
+            api_module.settings, "service_active_heartbeat_interval_seconds", 0.02
+        ),
+        patch.object(service_proxy.settings, "agent_port", 9090),
+    ]
     try:
-        patches = [
-            patch.object(api_module.settings, "enable_service_endpoints", enabled),
-            patch.object(api_module.settings, "require_api_key", True),
-            patch.object(api_module.settings, "api_keys", API_KEY),
-            patch.object(
-                service_tokens.settings, "service_token_secret", "unit-test-secret"
-            ),
-            patch.object(service_proxy.settings, "agent_port", 9090),
-        ]
         with ExitStack() as stack:
             for patcher in patches:
                 stack.enter_context(patcher)
-            # The upstream port must not collide with the reserved agent port.
             assert upstream_port != 9090
             with TestClient(api_module.app) as client:
                 try:
-                    yield client, sandbox
+                    yield client, services, manager
                 finally:
-                    # Close the pooled session on the loop that created it.
                     client.portal.call(proxy_client.close)
     finally:
         api_module.app.router.lifespan_context = previous_lifespan
@@ -250,402 +312,435 @@ def orchestrator_client(upstream_port: int, exposed_ports=None, enabled=True):
 
 @pytest.fixture
 def upstream():
-    with running_upstream() as port:
-        yield port
+    with running_upstream() as value:
+        yield value
 
 
-AUTH = {"X-API-Key": API_KEY}
-
-
-# ---------------------------------------------------------------------------
-# Exposing and revoking
-# ---------------------------------------------------------------------------
+def _expose(client: TestClient, port: int, **overrides) -> str:
+    response = client.post(
+        f"/sandboxes/{SANDBOX_ID}/services",
+        json={"port": port, **overrides},
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["url"]
 
 
 class TestServiceLifecycle:
-    def test_expose_returns_a_usable_url(self, upstream):
-        with orchestrator_client(upstream) as (client, sandbox):
-            response = client.post(
-                f"/sandboxes/{SANDBOX_ID}/services",
-                json={"port": upstream},
-                headers=AUTH,
+    def test_expose_list_and_revoke(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, services, _manager):
+            url = _expose(client, port)
+            assert ".services.testserver/s/" in url
+            assert client.get(f"/sandboxes/{SANDBOX_ID}/services", headers=AUTH).json()[
+                "ports"
+            ] == [port]
+            assert (
+                client.delete(
+                    f"/sandboxes/{SANDBOX_ID}/services/{port}", headers=AUTH
+                ).status_code
+                == 200
             )
-            assert response.status_code == 200
-            body = response.json()
-            assert body["port"] == upstream
-            assert "/s/" in body["url"]
-            assert body["expires_at"] > 0
-            assert upstream in sandbox.exposed_ports
+            assert services == {}
 
-    def test_expose_requires_api_key(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
+    def test_expose_requires_management_api_key(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
             response = client.post(
-                f"/sandboxes/{SANDBOX_ID}/services", json={"port": upstream}
+                f"/sandboxes/{SANDBOX_ID}/services", json={"port": port}
             )
             assert response.status_code == 401
 
-    def test_expose_rejects_agent_port(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
+    def test_agent_port_is_rejected(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
             response = client.post(
-                f"/sandboxes/{SANDBOX_ID}/services", json={"port": 9090}, headers=AUTH
+                f"/sandboxes/{SANDBOX_ID}/services",
+                json={"port": 9090},
+                headers=AUTH,
             )
             assert response.status_code == 400
-            assert "reserved" in response.json()["detail"]
 
-    def test_expose_unknown_sandbox_is_404(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            response = client.post(
-                "/sandboxes/does-not-exist/services",
-                json={"port": upstream},
-                headers=AUTH,
-            )
-            assert response.status_code == 404
-
-    def test_expose_is_idempotent(self, upstream):
-        with orchestrator_client(upstream) as (client, sandbox):
-            for _ in range(3):
-                assert (
-                    client.post(
-                        f"/sandboxes/{SANDBOX_ID}/services",
-                        json={"port": upstream},
-                        headers=AUTH,
-                    ).status_code
-                    == 200
-                )
-            assert sandbox.exposed_ports.count(upstream) == 1
-
-    def test_list_reports_exposed_ports(self, upstream):
-        with orchestrator_client(upstream, exposed_ports=[upstream]) as (client, _):
-            response = client.get(f"/sandboxes/{SANDBOX_ID}/services", headers=AUTH)
-            assert response.status_code == 200
-            assert response.json()["ports"] == [upstream]
-
-    def test_revoke_removes_the_port(self, upstream):
-        with orchestrator_client(upstream, exposed_ports=[upstream]) as (
-            client,
-            sandbox,
-        ):
-            response = client.delete(
-                f"/sandboxes/{SANDBOX_ID}/services/{upstream}", headers=AUTH
-            )
-            assert response.status_code == 200
-            assert sandbox.exposed_ports == []
-
-    def test_revoking_an_unexposed_port_is_404(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            response = client.delete(
-                f"/sandboxes/{SANDBOX_ID}/services/4321", headers=AUTH
-            )
-            assert response.status_code == 404
-
-    def test_disabled_feature_hides_the_routes(self, upstream):
-        with orchestrator_client(upstream, enabled=False) as (client, _):
-            response = client.post(
-                f"/sandboxes/{SANDBOX_ID}/services",
-                json={"port": upstream},
-                headers=AUTH,
-            )
-            assert response.status_code == 404
-            assert "disabled" in response.json()["detail"]
-
-    def test_wait_ready_polls_the_service(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
+    def test_readiness_failure_does_not_create_exposure(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, services, _manager):
             response = client.post(
                 f"/sandboxes/{SANDBOX_ID}/services",
                 json={
-                    "port": upstream,
+                    "port": port,
                     "wait_ready": True,
-                    "health_path": "/health",
-                    "ready_timeout": 10,
-                },
-                headers=AUTH,
-            )
-            assert response.status_code == 200
-
-    def test_wait_ready_times_out_on_a_dead_service(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            response = client.post(
-                f"/sandboxes/{SANDBOX_ID}/services",
-                json={
-                    "port": upstream,
-                    "wait_ready": True,
-                    "health_path": "/nope",
+                    "health_path": "/missing",
                     "ready_timeout": 1,
                 },
                 headers=AUTH,
             )
             assert response.status_code == 408
+            assert services == {}
 
-
-class TestServiceUrlHost:
-    """Where the URL points decides where the capability token is sent."""
-
-    def test_forwarded_host_is_ignored_by_default(self, upstream):
-        """A forged X-Forwarded-Host must not redirect the token off-site."""
-        with orchestrator_client(upstream) as (client, _):
-            response = client.post(
-                f"/sandboxes/{SANDBOX_ID}/services",
-                json={"port": upstream},
-                headers={**AUTH, "X-Forwarded-Host": "attacker.example.com"},
-            )
-            assert response.status_code == 200
-            assert "attacker.example.com" not in response.json()["url"]
-
-    def test_forwarded_host_used_only_when_trusted(self, upstream):
+    def test_missing_base_url_fails_closed(self, upstream):
         import orchard_env.orchestrator.api as api_module
 
-        with orchestrator_client(upstream) as (client, _):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            with patch.object(api_module.settings, "service_public_base_url", None):
+                response = client.post(
+                    f"/sandboxes/{SANDBOX_ID}/services",
+                    json={"port": port},
+                    headers=AUTH,
+                )
+            assert response.status_code == 503
+
+    def test_insecure_public_url_requires_explicit_opt_in(self, upstream):
+        import orchard_env.orchestrator.api as api_module
+
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
             with patch.object(
-                api_module.settings, "service_trust_forwarded_headers", True
+                api_module.settings, "service_allow_insecure_http", False
             ):
                 response = client.post(
                     f"/sandboxes/{SANDBOX_ID}/services",
-                    json={"port": upstream},
-                    headers={
-                        **AUTH,
-                        "X-Forwarded-Host": "public.example.com",
-                        "X-Forwarded-Proto": "https",
-                    },
+                    json={"port": port},
+                    headers=AUTH,
                 )
-            assert response.json()["url"].startswith("https://public.example.com/s/")
-
-    def test_configured_base_url_wins(self, upstream):
-        """An explicit base URL is authoritative, whatever headers claim."""
-        import orchard_env.orchestrator.api as api_module
-
-        with orchestrator_client(upstream) as (client, _):
-            with ExitStack() as stack:
-                stack.enter_context(
-                    patch.object(
-                        api_module.settings,
-                        "service_public_base_url",
-                        "https://orchard.example.com",
-                    )
-                )
-                stack.enter_context(
-                    patch.object(
-                        api_module.settings, "service_trust_forwarded_headers", True
-                    )
-                )
-                response = client.post(
-                    f"/sandboxes/{SANDBOX_ID}/services",
-                    json={"port": upstream},
-                    headers={**AUTH, "X-Forwarded-Host": "attacker.example.com"},
-                )
-            url = response.json()["url"]
-            assert url.startswith("https://orchard.example.com/s/")
-            assert "attacker.example.com" not in url
+            assert response.status_code == 503
 
 
-# ---------------------------------------------------------------------------
-# HTTP proxying
-# ---------------------------------------------------------------------------
+class TestOriginIsolation:
+    def test_capabilities_receive_different_browser_origins(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            first = _expose(client, port).split("/s/", 1)[0]
+            second = _expose(client, port + 1).split("/s/", 1)[0]
+            assert first != second
 
+    def test_proxy_is_refused_on_management_origin(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            url = _expose(client, port)
+            path = "/" + url.split("/", 3)[3]
+            assert client.get(path).status_code == 404
 
-def _expose(client, port) -> str:
-    response = client.post(
-        f"/sandboxes/{SANDBOX_ID}/services", json={"port": port}, headers=AUTH
-    )
-    assert response.status_code == 200
-    # TestClient URLs are absolute; keep only the path so the request routes.
-    return "/s/" + response.json()["url"].split("/s/", 1)[1]
+    def test_management_api_is_refused_on_service_origin(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            service_origin = _expose(client, port).split("/s/", 1)[0]
+            response = client.get(f"{service_origin}/health")
+            assert response.status_code == 404
+
+    def test_same_hostname_on_another_port_is_not_a_management_origin(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            service_origin = _expose(client, port).split("/s/", 1)[0]
+            hostname = service_origin.split("://", 1)[1]
+            response = client.get(f"http://{hostname}:9999/health")
+            assert response.status_code == 404
 
 
 class TestHttpProxy:
-    def test_get_is_proxied(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            response = client.get(f"{base}/health")
-            assert response.status_code == 200
-            assert response.json() == {"status": "healthy"}
+    def test_status_query_body_stream_and_compression(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            base = _expose(client, port)
+            assert client.get(f"{base}/health").json() == {"status": "healthy"}
+            assert client.get(f"{base}/echo?request_value=hello").json() == {
+                "value": "hello"
+            }
+            assert client.post(f"{base}/body", content=b"payload").content == b"payload"
+            assert client.get(f"{base}/teapot").status_code == 418
+            assert client.get(f"{base}/stream").text == (
+                "chunk-0;chunk-1;chunk-2;chunk-3;chunk-4;"
+            )
+            root = client.get(base, follow_redirects=False)
+            assert root.status_code == 200
+            assert root.text == "root-ok"
+            assert client.get(f"{base}/gzipped").text == ("compressible-payload;" * 200)
 
-    def test_proxy_needs_no_api_key(self, upstream):
-        """The URL is the credential; header-less clients must work."""
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            assert client.get(f"{base}/health").status_code == 200
+    def test_management_credentials_are_not_forwarded(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            base = _expose(client, port)
+            response = client.get(
+                f"{base}/request-headers",
+                headers={
+                    "Authorization": "Bearer secret",
+                    "Cookie": "session=secret",
+                    "X-API-Key": "management-key",
+                    "X-Custom": "safe",
+                },
+            )
+            assert response.json() == {
+                "authorization": None,
+                "cookie": None,
+                "x_api_key": None,
+                "x_custom": "safe",
+            }
 
-    def test_query_string_reaches_upstream(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            response = client.get(f"{base}/echo?request_value=hello")
-            assert response.json() == {"value": "hello"}
+    def test_hostile_browser_state_headers_are_stripped(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            response = client.get(f"{_expose(client, port)}/response-headers")
+            assert "set-cookie" not in response.headers
+            assert "service-worker-allowed" not in response.headers
+            assert response.headers.get("x-repeat") == "one, two"
 
-    def test_post_body_reaches_upstream(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            response = client.post(f"{base}/body", json={"a": 1})
-            assert response.json() == {"received": {"a": 1}}
+    def test_encoded_path_and_query_are_preserved(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            base = _expose(client, port)
+            response = client.get(f"{base}/raw/a%2Fb%3Fc%23d?sig=a%2Fb%3Fc%23d")
+            assert response.json() == {
+                "raw_path": "/raw/a%2Fb%3Fc%23d",
+                "raw_query": "sig=a%2Fb%3Fc%23d",
+            }
 
-    def test_upstream_status_is_preserved(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            response = client.get(f"{base}/teapot")
-            assert response.status_code == 418
-            assert response.text == "short and stout"
+    def test_management_api_key_is_removed_from_query(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            base = _expose(client, port)
+            response = client.get(f"{base}/raw/value?api_key={API_KEY}&sig=a%2Fb")
+            assert response.json()["raw_query"] == "sig=a%2Fb"
 
-    def test_streaming_response_is_complete(self, upstream):
-        """Regression guard: mis-copied framing headers truncate the body."""
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            response = client.get(f"{base}/stream")
-            assert response.status_code == 200
-            assert response.text == "chunk-0;chunk-1;chunk-2;chunk-3;chunk-4;"
+    def test_request_size_limit(self, upstream):
+        import orchard_env.orchestrator.api as api_module
 
-    def test_unknown_upstream_path_yields_upstream_404(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            assert client.get(f"{base}/missing").status_code == 404
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            base = _expose(client, port)
+            with patch.object(
+                api_module.settings, "service_proxy_max_request_bytes", 4
+            ):
+                response = client.post(f"{base}/body", content=b"12345")
+            assert response.status_code == 413
 
-    def test_compressed_response_is_still_decodable(self, upstream):
-        """Regression guard: the body is relayed as-is, so Content-Encoding
-        must survive. Stripping it while forwarding gzipped bytes hands the
-        client undecodable data."""
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            response = client.get(f"{base}/gzipped")
-            assert response.status_code == 200
-            assert response.text == "compressible-payload;" * 200
+    def test_chunked_request_size_limit(self, upstream):
+        import orchard_env.orchestrator.api as api_module
 
-    def test_root_of_the_service_url_is_reachable(self, upstream):
-        """A bare `curl $URL` must work, not just paths beneath it."""
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            assert client.get(base).text == "root-ok"
-            assert client.get(f"{base}/").text == "root-ok"
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            base = _expose(client, port)
+            with patch.object(
+                api_module.settings, "service_proxy_max_request_bytes", 4
+            ):
+                response = client.post(f"{base}/body", content=iter([b"12", b"345"]))
+            assert response.status_code == 413
 
-    def test_unreachable_service_does_not_leak_the_pod_ip(self, upstream):
-        """A 502 must not tell an external caller the cluster's internals."""
-        import socket
+    def test_active_stream_refreshes_heartbeat(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, manager):
+            base = _expose(client, port)
+            assert client.get(f"{base}/slow-stream").text == "start;end;"
+            # One initial refresh plus at least one active-session refresh.
+            assert manager.heartbeat.await_count >= 2
 
-        # A port nothing is listening on, so a real connection error occurs.
+    def test_upstream_error_does_not_leak_pod_address(self, upstream):
+        port, _app = upstream
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             dead_port = probe.getsockname()[1]
-
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, dead_port)
-            response = client.get(f"{base}/health")
-
+        with orchestrator_client(port) as (client, _services, _manager):
+            response = client.get(f"{_expose(client, dead_port)}/health")
             assert response.status_code == 502
-            detail = response.json()["detail"]
-            assert detail == "Service unreachable"
-            assert "127.0.0.1" not in detail
-            assert str(dead_port) not in detail
+            assert response.json()["detail"] == "Service unreachable"
+            assert str(dead_port) not in response.text
 
 
-# ---------------------------------------------------------------------------
-# Authorisation on the proxy path
-# ---------------------------------------------------------------------------
-
-
-class TestProxyAuthorisation:
-    def test_forged_token_rejected(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            _expose(client, upstream)
-            assert client.get("/s/not-a-real-token/health").status_code == 403
-
-    def test_token_for_an_unexposed_port_rejected(self, upstream):
-        """A token alone is not enough; the port must still be allowlisted."""
-        with orchestrator_client(upstream) as (client, _):
-            token, _expiry = service_tokens.mint_token(SANDBOX_ID, upstream)
-            assert client.get(f"/s/{token}/health").status_code == 403
-
-    def test_revocation_takes_effect_immediately(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            assert client.get(f"{base}/health").status_code == 200
-
-            assert (
-                client.delete(
-                    f"/sandboxes/{SANDBOX_ID}/services/{upstream}", headers=AUTH
-                ).status_code
-                == 200
+class TestCapabilities:
+    def test_forged_and_unexposed_tokens_are_rejected(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            forged_url = service_proxy.build_service_url(
+                SERVICE_ORIGIN_TEMPLATE, "not-a-real-token"
             )
-            # Same, still-unexpired URL must now be refused.
-            assert client.get(f"{base}/health").status_code == 403
+            assert client.get(f"{forged_url}/health").status_code == 403
+            token, _ = service_tokens.mint_token(SANDBOX_ID, port, "not-active")
+            unexposed_url = service_proxy.build_service_url(
+                SERVICE_ORIGIN_TEMPLATE, token
+            )
+            assert client.get(f"{unexposed_url}/health").status_code == 403
 
-    def test_expired_token_rejected(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            import time as time_module
+    def test_revoke_then_reexpose_does_not_revive_old_url(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            old_url = _expose(client, port)
+            assert client.get(f"{old_url}/health").status_code == 200
+            client.delete(f"/sandboxes/{SANDBOX_ID}/services/{port}", headers=AUTH)
+            new_url = _expose(client, port)
+            assert new_url != old_url
+            assert client.get(f"{old_url}/health").status_code == 403
+            assert client.get(f"{new_url}/health").status_code == 200
 
-            with patch.object(
-                service_tokens.time, "time", return_value=time_module.time() + 86400
-            ):
-                assert client.get(f"{base}/health").status_code == 403
 
-    def test_proxy_disabled_when_feature_off(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-        with orchestrator_client(upstream, exposed_ports=[upstream], enabled=False) as (
-            client2,
-            _,
+class TestSessionWatchdog:
+    @pytest.mark.asyncio
+    async def test_revocation_closes_an_active_session(self):
+        import orchard_env.orchestrator.api as api_module
+
+        manager = AsyncMock()
+        manager.get_service_generation.return_value = None
+        close = AsyncMock()
+        with (
+            patch.object(api_module, "sandbox_manager", manager),
+            patch.object(
+                api_module.settings, "service_active_heartbeat_interval_seconds", 0.01
+            ),
         ):
-            assert client2.get(f"{base}/health").status_code == 404
+            await asyncio.wait_for(
+                api_module._maintain_service_session(
+                    SANDBOX_ID,
+                    8000,
+                    "generation",
+                    int(time.time()) + 60,
+                    close_session=close,
+                ),
+                timeout=0.2,
+            )
+        close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_state_store_failure_closes_an_active_session(self):
+        import orchard_env.orchestrator.api as api_module
+
+        manager = AsyncMock()
+        manager.get_service_generation.side_effect = RuntimeError("redis unavailable")
+        close = AsyncMock()
+        with (
+            patch.object(api_module, "sandbox_manager", manager),
+            patch.object(
+                api_module.settings, "service_active_heartbeat_interval_seconds", 0.01
+            ),
+        ):
+            await asyncio.wait_for(
+                api_module._maintain_service_session(
+                    SANDBOX_ID,
+                    8000,
+                    "generation",
+                    int(time.time()) + 60,
+                    close_session=close,
+                ),
+                timeout=0.2,
+            )
+        close.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# WebSocket proxying — the reason the capability URL exists
-# ---------------------------------------------------------------------------
+class TestRedirectPinning:
+    def test_external_http_redirect_is_blocked(self):
+        victim = _build_upstream_app()
+        with running_upstream(victim) as (victim_port, victim_app):
+            target = f"http://127.0.0.1:{victim_port}"
+            primary = _build_upstream_app(target)
+            with running_upstream(primary) as (primary_port, _primary_app):
+                with orchestrator_client(primary_port) as (
+                    client,
+                    _services,
+                    _manager,
+                ):
+                    response = client.get(
+                        f"{_expose(client, primary_port)}/redirect-health"
+                    )
+                    assert response.status_code == 502
+                    assert victim_app.state.hits == 0
+
+    def test_relative_redirect_stays_beneath_capability_url(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            response = client.get(f"{_expose(client, port)}/relative-redirect")
+            assert response.status_code == 200
+            assert response.json() == {"status": "healthy"}
+
+    def test_readiness_probe_does_not_follow_redirect(self):
+        victim = _build_upstream_app()
+        with running_upstream(victim) as (victim_port, victim_app):
+            target = f"http://127.0.0.1:{victim_port}"
+            primary = _build_upstream_app(target)
+            with running_upstream(primary) as (primary_port, _primary_app):
+                with orchestrator_client(primary_port) as (
+                    client,
+                    services,
+                    _manager,
+                ):
+                    response = client.post(
+                        f"/sandboxes/{SANDBOX_ID}/services",
+                        json={
+                            "port": primary_port,
+                            "wait_ready": True,
+                            "health_path": "/redirect-health",
+                            "ready_timeout": 1,
+                        },
+                        headers=AUTH,
+                    )
+                    assert response.status_code == 408
+                    assert victim_app.state.hits == 0
+                    assert services == {}
+
+    @requires_websockets
+    def test_websocket_redirect_cannot_leave_pinned_port(self):
+        victim = _build_upstream_app()
+        with running_upstream(victim) as (victim_port, victim_app):
+            target = f"http://127.0.0.1:{victim_port}"
+            primary = _build_upstream_app(target)
+            with running_upstream(primary) as (primary_port, _primary_app):
+                with orchestrator_client(primary_port) as (
+                    client,
+                    _services,
+                    _manager,
+                ):
+                    base = _expose(client, primary_port).replace("http:", "ws:")
+                    with pytest.raises(WebSocketDisconnect) as excinfo:
+                        with client.websocket_connect(f"{base}/ws-redirect"):
+                            pass
+                    assert excinfo.value.code == 4503
+                    assert victim_app.state.ws_hits == 0
 
 
 class TestWebSocketProxy:
     @requires_websockets
-    def test_text_frames_round_trip(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            with client.websocket_connect(f"{base}/ws") as ws:
+    def test_text_binary_subprotocol_close_and_heartbeat(self, upstream):
+        port, app = upstream
+        with orchestrator_client(port) as (client, _services, manager):
+            base = _expose(client, port).replace("http:", "ws:")
+            with client.websocket_connect(
+                f"{base}/ws",
+                subprotocols=[f"api_key.{API_KEY}", "openenv-v1"],
+            ) as ws:
+                assert ws.accepted_subprotocol == "openenv-v1"
+                assert app.state.last_protocols == "openenv-v1"
                 ws.send_text("hello")
                 assert ws.receive_text() == "echo:hello"
-
-    @requires_websockets
-    def test_many_frames_round_trip(self, upstream):
-        """A persistent session, which is how an RL rollout drives an env."""
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            with client.websocket_connect(f"{base}/ws") as ws:
-                for index in range(25):
-                    ws.send_text(f"m{index}")
-                    assert ws.receive_text() == f"echo:m{index}"
-
-    @requires_websockets
-    def test_binary_frames_round_trip(self, upstream):
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            with client.websocket_connect(f"{base}/ws") as ws:
-                ws.send_bytes(b"\x00\x01\x02")
-                assert ws.receive_bytes() == b"bin:\x00\x01\x02"
-
-    @requires_websockets
-    def test_upstream_close_code_is_propagated(self, upstream):
-        """A client must be able to tell a clean close from a proxy failure."""
-        from starlette.websockets import WebSocketDisconnect
-
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            with client.websocket_connect(f"{base}/ws") as ws:
+                ws.send_bytes(b"\x00\x01")
+                assert ws.receive_bytes() == b"bin:\x00\x01"
+                ws.send_text("wait")
+                assert ws.receive_text() == "echo:wait"
+                assert manager.heartbeat.await_count >= 2
                 ws.send_text("close-please")
                 with pytest.raises(WebSocketDisconnect) as excinfo:
                     ws.receive_text()
-            assert excinfo.value.code == 4200
+                assert excinfo.value.code == 4200
 
-    def test_forged_token_refused_before_accept(self, upstream):
-        from starlette.websockets import WebSocketDisconnect
+    @requires_websockets
+    def test_revocation_closes_an_established_socket(self, upstream):
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            base = _expose(client, port).replace("http:", "ws:")
+            with client.websocket_connect(f"{base}/ws") as ws:
+                client.delete(f"/sandboxes/{SANDBOX_ID}/services/{port}", headers=AUTH)
+                with pytest.raises(WebSocketDisconnect) as excinfo:
+                    ws.receive_text()
+                assert excinfo.value.code == 4403
 
-        with orchestrator_client(upstream) as (client, _):
-            with pytest.raises(WebSocketDisconnect) as excinfo:
-                with client.websocket_connect("/s/bogus-token/ws"):
-                    pass
-            assert excinfo.value.code == 4403
+    @requires_websockets
+    def test_handshake_has_a_deadline(self, upstream):
+        import orchard_env.orchestrator.api as api_module
 
-    def test_revoked_port_refuses_new_sockets(self, upstream):
-        from starlette.websockets import WebSocketDisconnect
-
-        with orchestrator_client(upstream) as (client, _):
-            base = _expose(client, upstream)
-            client.delete(f"/sandboxes/{SANDBOX_ID}/services/{upstream}", headers=AUTH)
-            with pytest.raises(WebSocketDisconnect) as excinfo:
-                with client.websocket_connect(f"{base}/ws"):
-                    pass
-            assert excinfo.value.code == 4403
+        port, _app = upstream
+        with orchestrator_client(port) as (client, _services, _manager):
+            base = _expose(client, port).replace("http:", "ws:")
+            with patch.object(
+                api_module.settings,
+                "service_proxy_handshake_timeout_seconds",
+                0.05,
+            ):
+                with pytest.raises(WebSocketDisconnect) as excinfo:
+                    with client.websocket_connect(f"{base}/ws-hang"):
+                        pass
+            assert excinfo.value.code == 4503

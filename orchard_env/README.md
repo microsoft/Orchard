@@ -106,8 +106,9 @@ WebSocket client, a browser) work unchanged — and appending a path just works,
 so a client that adds `/ws` gets a valid URL. Treat the URL as a bearer token:
 scope it with `ttl_seconds` and revoke it when done.
 
-Requires `ENABLE_SERVICE_ENDPOINTS=true` on the orchestrator. See the
-[API reference](docs/api.md#service-endpoints).
+Requires `ENABLE_SERVICE_ENDPOINTS=true`, a dedicated
+`SERVICE_PUBLIC_BASE_URL`, and `SERVICE_TOKEN_SECRET` on the orchestrator. See
+the [API reference](docs/api.md#service-endpoints).
 
 ### Asynchronous client
 
@@ -311,19 +312,22 @@ and a client outside the cluster needs to talk to it.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `ENABLE_SERVICE_ENDPOINTS` | `false` | Master switch |
-| `SERVICE_PUBLIC_BASE_URL` | — | Public orchestrator URL used to build service URLs |
-| `SERVICE_TRUST_FORWARDED_HEADERS` | `false` | Trust `X-Forwarded-*` when the base URL is unset |
-| `SERVICE_TOKEN_SECRET` | — | HMAC key for service URLs; **set this for multi-replica** |
+| `SERVICE_PUBLIC_BASE_URL` | — | Wildcard template, e.g. `https://{subdomain}.sandboxes.example.net` |
+| `SERVICE_ALLOW_INSECURE_HTTP` | `false` | Development-only HTTP escape hatch |
+| `SERVICE_TOKEN_SECRET` | — | Required HMAC key for service URLs |
 | `SERVICE_TOKEN_TTL_SECONDS` | `3600` | Lifetime of a service URL |
 | `SERVICE_RESERVED_PORTS` | — | Extra ports that may never be exposed |
 | `MAX_SERVICES_PER_SANDBOX` | `8` | Ports one sandbox may expose at once |
 | `SERVICE_TRAFFIC_REFRESHES_HEARTBEAT` | `true` | Proxied traffic keeps the sandbox alive |
+| `SERVICE_PROXY_MAX_REQUEST_BYTES` | `16777216` | Maximum proxied request body |
 
 A service URL is a **bearer credential**: whoever holds it can reach that port
-on that sandbox until it expires. Set `SERVICE_PUBLIC_BASE_URL` so the URL
-cannot be pointed elsewhere by a forged `X-Forwarded-Host`, terminate TLS at
-your ingress, keep URLs out of logs, and revoke them when finished. The in-pod
-agent port is never exposable.
+on that sandbox until it expires. `SERVICE_PUBLIC_BASE_URL` must be a wildcard
+HTTPS template on a separate registrable domain from the management API.
+Orchard gives every capability a different hostname, which is the browser
+security boundary between hostile sandbox services. Configure wildcard DNS and
+TLS, redact `/s/*` in ingress logs, keep URLs out of traces and referrers, and
+revoke them when finished. The in-pod agent port is never exposable.
 
 ## Development
 

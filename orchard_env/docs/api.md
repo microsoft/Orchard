@@ -233,7 +233,7 @@ X-API-Key: your-api-key
 {
   "sandbox_id": "abc12345",
   "port": 8000,
-  "url": "https://orchestrator.example.com/s/eyJ...signed-token",
+  "url": "https://7f0a...c3.sandboxes.example.net/s/eyJ...signed-token",
   "expires_at": 1702903600.0
 }
 ```
@@ -242,8 +242,8 @@ X-API-Key: your-api-key
 setting: a sandbox reports ready when the *in-pod agent* is up, which can be
 well before a server you just launched has finished binding.
 
-Re-exposing an already-exposed port is not an error, so a client that retries
-after a network blip does not need to special-case it.
+Re-exposing an active port is idempotent. After revocation, exposing the same
+port creates a new generation, so old unexpired URLs stay invalid.
 
 **The returned URL is a bearer credential.** Anyone holding it can reach that
 port on that sandbox until it expires. Keep it out of logs, scope it with
@@ -284,24 +284,32 @@ X-API-Key: your-api-key
 { "status": "revoked", "sandbox_id": "abc12345", "port": 8000 }
 ```
 
-Revocation is immediate: URLs that have not yet expired stop working, because
-the allowlist is consulted on every request.
+Revocation is immediate and permanent for that URL: the active generation is
+consulted on every request, and re-exposure creates a different generation.
 
 #### Security notes
 
 - The in-pod agent port (`AGENT_PORT`, default `9090`) can never be exposed —
   it would hand out unauthenticated exec and file access inside the sandbox.
   `SERVICE_RESERVED_PORTS` adds more ports to that list.
-- Terminate TLS at your ingress. Set `SERVICE_PUBLIC_BASE_URL` to the
-  orchestrator's public `https://` address so service URLs are `https://` and
-  WebSockets are `wss://`. This also stops a forged `X-Forwarded-Host` from
-  redirecting the URL — and the credential in it — to another domain.
-- In a multi-replica deployment set `SERVICE_TOKEN_SECRET` so every replica
-  validates tokens minted by any other. Without it the key is derived from the
-  configured API keys, or generated per process as a last resort.
+- `SERVICE_PUBLIC_BASE_URL` is required and must contain one `{subdomain}`
+  placeholder, for example
+  `https://{subdomain}.sandboxes.example.net`. Configure wildcard DNS and TLS
+  on a separate registrable domain from the management API. Every capability
+  receives a different hostname, isolating browser origin state. The
+  management API is refused on all matching service hostnames, and capability
+  routes are refused elsewhere.
+- `SERVICE_TOKEN_SECRET` is required. Use a separate random secret, not a
+  management API key.
+- Capability tokens appear in request paths. Orchard disables its own Uvicorn
+  access log, but ingress, load-balancer, and tracing systems must also redact
+  `/s/*`. Avoid putting service URLs in referrers or durable logs.
+- Management credentials (`X-API-Key`, `Authorization`, and cookies) are never
+  forwarded into sandbox code. Sandbox `Set-Cookie` and
+  `Service-Worker-Allowed` response headers are stripped.
 - Proxied traffic refreshes the sandbox's liveness timer by default
-  (`SERVICE_TRAFFIC_REFRESHES_HEARTBEAT`), so an actively used service is not
-  reaped mid-session.
+  for the full lifetime of an HTTP stream or WebSocket, so an active service
+  is not reaped mid-session.
 
 | Status | Meaning |
 | --- | --- |
@@ -310,6 +318,7 @@ the allowlist is consulted on every request.
 | `404` | Sandbox not found, or service endpoints are disabled |
 | `408` | `wait_ready` timed out |
 | `409` | Sandbox already exposes `MAX_SERVICES_PER_SANDBOX` ports |
+| `413` | Request body exceeds `SERVICE_PROXY_MAX_REQUEST_BYTES` |
 | `502` | Service inside the sandbox is unreachable |
 | `504` | Service did not respond in time |
 

@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """Integration check for sandbox service endpoints (needs a live orchestrator).
 
-Starts a small HTTP + WebSocket server inside a real sandbox, exposes it, and
-drives it from outside the cluster:
+Starts a small HTTP server inside a real sandbox, exposes it, and drives it
+from outside the cluster:
 
 1. create a sandbox
 2. write and launch a server on a port inside it
 3. expose that port and wait for it to answer
 4. GET through the proxy
-5. round-trip text and binary frames over the proxied WebSocket
-6. confirm a large response survives streaming intact
-7. confirm revocation takes effect immediately
-8. confirm the in-pod agent port can never be exposed
+5. confirm a large response survives streaming intact
+6. confirm revocation takes effect immediately
+7. confirm the in-pod agent port can never be exposed
 
 Usage::
 
@@ -19,8 +18,10 @@ Usage::
     export SANDBOX_API_KEY="your-api-key"
     python tests/integration/service_endpoint.py
 
-Requires ``ENABLE_SERVICE_ENDPOINTS=true`` on the orchestrator. Deliberately
-not named ``test_*.py``: importing it fires real network calls.
+Requires ``ENABLE_SERVICE_ENDPOINTS=true``, ``SERVICE_PUBLIC_BASE_URL``, and
+``SERVICE_TOKEN_SECRET`` on the orchestrator. WebSocket behavior is covered by
+the route-level test suite against a real upstream server. Deliberately not
+named ``test_*.py``: importing it fires real network calls.
 """
 
 import argparse

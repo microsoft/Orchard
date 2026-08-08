@@ -87,28 +87,27 @@ class Settings(BaseSettings):
     # Lifetime of a capability token. Short by default: the URL is a bearer
     # credential, and callers can mint a new one whenever they need it.
     service_token_ttl_seconds: int = 3600
-    # HMAC key for capability tokens. REQUIRED for multi-replica deployments so
-    # every replica validates tokens minted by any other. When unset the key is
-    # derived from the configured API keys, or randomly generated per process.
+    # HMAC key for capability tokens. Required whenever service endpoints are
+    # enabled; fail closed rather than minting process-local or derived keys.
     service_token_secret: str | None = None
-    # Whether proxied traffic refreshes the sandbox's liveness timer, so an
-    # actively used service is not reaped mid-session by heartbeat cleanup.
+    # Periodically refresh liveness for the full lifetime of an active HTTP
+    # stream or WebSocket, not merely when it is opened.
     service_traffic_refreshes_heartbeat: bool = True
-    # Public base URL clients use to reach the orchestrator, e.g.
-    # "https://orchard.example.com". Set this whenever the orchestrator sits
-    # behind a proxy you do not control end to end: without it the service URL
-    # is derived from request headers, and a forged X-Forwarded-Host would send
-    # the caller (and the capability token in the URL) to an attacker's domain.
+    service_active_heartbeat_interval_seconds: int = 60
+    # Wildcard origin template for untrusted sandbox traffic, e.g.
+    # "https://{subdomain}.sandboxes.example.net". Required when the feature is
+    # enabled. Each capability gets a different hostname, which is the browser
+    # security boundary.
     service_public_base_url: str | None = None
-    # Whether to trust X-Forwarded-Proto/X-Forwarded-Host when
-    # SERVICE_PUBLIC_BASE_URL is unset. Only enable behind a proxy that
-    # overwrites those headers on every request.
-    service_trust_forwarded_headers: bool = False
+    # Development-only escape hatch. Production service origins must use TLS.
+    service_allow_insecure_http: bool = False
     # Proxy connection pool and timeouts.
     service_proxy_pool_size: int = 200
     service_proxy_pool_limit_per_host: int = 20
     service_proxy_connect_timeout: int = 5
+    service_proxy_handshake_timeout_seconds: int = 15
     service_proxy_timeout_seconds: int = 300
+    service_proxy_max_request_bytes: int = 16 * 1024 * 1024
     service_proxy_max_message_bytes: int = 16 * 1024 * 1024
 
     # Sandbox pod probes for the in-pod agent (/health on agent_port).
@@ -154,6 +153,8 @@ class Settings(BaseSettings):
 
     # Redis settings (for multi-replica state sharing)
     redis_url: str = "redis://redis-service.orchestrator.svc.cluster.local:6379/0"
+    redis_password: str | None = None
+    redis_require_auth: bool = True
     use_redis: bool = True  # Set to False to use in-memory store (single replica only)
 
     # Logging

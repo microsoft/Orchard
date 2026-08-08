@@ -1,41 +1,31 @@
-"""Capability tokens for sandbox service endpoints.
+"""Signed capabilities for sandbox service endpoints.
 
-A service endpoint URL is handed to programs that cannot attach an
-``X-API-Key`` header — an OpenEnv ``EnvClient`` opens a raw WebSocket, a
-browser follows a link, a curl one-liner is pasted into a notebook. The URL
-therefore has to authenticate itself.
+A service URL is handed to clients that may not support custom authentication
+headers, including an OpenEnv ``EnvClient`` opening a raw WebSocket. The URL
+therefore carries a short-lived capability token.
 
-A token is a signed, expiring capability naming exactly one ``(sandbox, port)``
-pair::
+The HMAC binds four values:
 
-    base64url(payload) "." base64url(HMAC-SHA256(secret, payload))
+* sandbox ID
+* port
+* exposure generation
+* expiration time
 
-where ``payload`` is ``"<sandbox_id>:<port>:<expires_at>"``. Verification is
-pure computation, so any orchestrator replica can validate a token minted by
-any other without shared state. Possession of a valid token grants access to
-that one port on that one sandbox, until it expires or the port is revoked.
-
-Signing key resolution, in order:
-
-1. ``SERVICE_TOKEN_SECRET`` — set this in multi-replica deployments.
-2. A digest of the configured API keys, which every replica already shares.
-3. A per-process random key, with a warning. Tokens then stop working when a
-   replica restarts or a request lands on a different one.
+The generation changes whenever a revoked port is exposed again. This prevents
+an old, unexpired URL from becoming valid after re-exposure.
 """
 
 import base64
 import hashlib
 import hmac
-import logging
-import secrets
+import json
 import time
+from typing import Any
 
 from orchard_env.orchestrator.settings import settings
 
-logger = logging.getLogger(__name__)
-
 _SEPARATOR = "."
-_PROCESS_SECRET: bytes | None = None
+_TOKEN_VERSION = 1
 
 
 class ServiceTokenError(Exception):
@@ -52,61 +42,68 @@ def _b64decode(value: str) -> bytes:
 
 
 def _signing_secret() -> bytes:
-    """Return the HMAC key, preferring the explicitly configured one."""
+    """Return the configured HMAC key, failing closed when it is absent."""
     configured = settings.service_token_secret
-    if configured:
-        return configured.encode("utf-8")
-
-    api_keys = settings.get_api_keys_set()
-    if api_keys:
-        # Deterministic across replicas: they are configured with the same keys.
-        # Domain-separated so the derived value is not itself a usable API key.
-        joined = "\x00".join(sorted(api_keys))
-        return hashlib.sha256(f"orchard-service-token\x00{joined}".encode()).digest()
-
-    global _PROCESS_SECRET
-    if _PROCESS_SECRET is None:
-        _PROCESS_SECRET = secrets.token_bytes(32)
-        logger.warning(
-            "No SERVICE_TOKEN_SECRET and no API keys configured; service tokens "
-            "are signed with a per-process key. They will not validate across "
-            "orchestrator replicas or restarts. Set SERVICE_TOKEN_SECRET."
+    if not configured:
+        raise ServiceTokenError(
+            "SERVICE_TOKEN_SECRET is required when service endpoints are enabled"
         )
-    return _PROCESS_SECRET
+    return configured.encode("utf-8")
+
+
+def _encode_payload(
+    sandbox_id: str, port: int, generation: str, expires_at: int
+) -> bytes:
+    payload: dict[str, Any] = {
+        "v": _TOKEN_VERSION,
+        "s": sandbox_id,
+        "p": port,
+        "g": generation,
+        "e": expires_at,
+    }
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
 def mint_token(
-    sandbox_id: str, port: int, ttl_seconds: int | None = None
+    sandbox_id: str,
+    port: int,
+    generation: str,
+    ttl_seconds: int | None = None,
 ) -> tuple[str, float]:
-    """Mint a capability token for one ``(sandbox_id, port)`` pair.
+    """Mint a capability for one exposure generation.
 
     Args:
         sandbox_id: Sandbox the token grants access to.
         port: Sandbox port the token grants access to.
+        generation: Opaque nonce stored with the active exposure.
         ttl_seconds: Lifetime in seconds. Defaults to
             ``settings.service_token_ttl_seconds``.
 
     Returns:
         A ``(token, expires_at)`` pair, where ``expires_at`` is a Unix timestamp.
     """
+    if not sandbox_id:
+        raise ValueError("sandbox_id must not be empty")
+    if not generation:
+        raise ValueError("generation must not be empty")
     if ttl_seconds is None:
         ttl_seconds = settings.service_token_ttl_seconds
     if ttl_seconds <= 0:
         raise ValueError("ttl_seconds must be positive")
 
     expires_at = int(time.time()) + int(ttl_seconds)
-    payload = f"{sandbox_id}:{port}:{expires_at}".encode()
+    payload = _encode_payload(sandbox_id, port, generation, expires_at)
     signature = hmac.new(_signing_secret(), payload, hashlib.sha256).digest()
     token = f"{_b64encode(payload)}{_SEPARATOR}{_b64encode(signature)}"
     return token, float(expires_at)
 
 
-def verify_token(token: str) -> tuple[str, int]:
-    """Verify a capability token and return the ``(sandbox_id, port)`` it names.
+def verify_token(token: str) -> tuple[str, int, str, int]:
+    """Verify and return ``(sandbox_id, port, generation, expires_at)``.
 
     Raises:
-        ServiceTokenError: If the token is malformed, has an invalid signature,
-            or has expired.
+        ServiceTokenError: If the token is malformed, forged, expired, or uses
+            an unsupported version.
     """
     if not token or _SEPARATOR not in token:
         raise ServiceTokenError("Malformed service token")
@@ -119,21 +116,30 @@ def verify_token(token: str) -> tuple[str, int]:
         raise ServiceTokenError("Malformed service token") from exc
 
     expected = hmac.new(_signing_secret(), payload, hashlib.sha256).digest()
-    # Constant-time comparison: a fast reject would leak the signature bytewise.
     if not hmac.compare_digest(signature, expected):
         raise ServiceTokenError("Invalid service token signature")
 
     try:
-        sandbox_id, port_text, expires_text = payload.decode("utf-8").rsplit(":", 2)
-        port = int(port_text)
-        expires_at = int(expires_text)
-    except Exception as exc:
+        decoded = json.loads(payload)
+        version = decoded["v"]
+        sandbox_id = decoded["s"]
+        port = decoded["p"]
+        generation = decoded["g"]
+        expires_at = decoded["e"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ServiceTokenError("Malformed service token payload") from exc
 
-    if not sandbox_id:
+    if version != _TOKEN_VERSION:
+        raise ServiceTokenError("Unsupported service token version")
+    if not isinstance(sandbox_id, str) or not sandbox_id:
         raise ServiceTokenError("Malformed service token payload")
-
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        raise ServiceTokenError("Malformed service token payload")
+    if not isinstance(generation, str) or not generation:
+        raise ServiceTokenError("Malformed service token payload")
+    if not isinstance(expires_at, int) or isinstance(expires_at, bool):
+        raise ServiceTokenError("Malformed service token payload")
     if time.time() > expires_at:
         raise ServiceTokenError("Service token has expired")
 
-    return sandbox_id, port
+    return sandbox_id, port, generation, expires_at
